@@ -39,6 +39,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+data = [
+    "duckdb>=1.0.0",
+    "pyarrow>=15.0.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",

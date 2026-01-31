@@ -476,5 +476,14 @@ def is_debug() -> bool:
     return bool(state["debug"])
 
 
+# Register dataset subcommand (requires optional [data] dependencies)
+try:
+    from anysite.dataset.cli import app as dataset_app
+
+    app.add_typer(dataset_app, name="dataset", help="Collect, store, and analyze datasets")
+except ImportError:
+    pass
+
+
 if __name__ == "__main__":
     app()
