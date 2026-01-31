@@ -157,6 +157,101 @@ anysite api /api/linkedin/user --from-file users.txt --input-key user --progress
 
 Input file formats: plain text (one value per line), JSONL, CSV.
 
+## Dataset Pipelines
+
+Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database.
+
+### Create a dataset
+
+```bash
+anysite dataset init my-dataset
+```
+
+Edit `my-dataset/dataset.yaml` to define sources:
+
+```yaml
+name: my-dataset
+sources:
+  - id: companies
+    endpoint: /api/linkedin/company
+    from_file: companies.txt
+    input_key: company
+
+  - id: employees
+    endpoint: /api/linkedin/company/employees
+    dependency:
+      from_source: companies
+      field: urn.value
+    input_key: companies
+    input_template:
+      companies:
+        - type: company
+          value: "{value}"
+      count: 5
+    db_load:
+      fields: [name, url, headline]
+
+storage:
+  format: parquet
+  path: ./data/
+```
+
+### Collect, query, and load
+
+```bash
+# Preview collection plan
+anysite dataset collect dataset.yaml --dry-run
+
+# Collect data (supports --incremental to skip already-collected inputs)
+anysite dataset collect dataset.yaml
+
+# Check status
+anysite dataset status dataset.yaml
+
+# Query with SQL (DuckDB)
+anysite dataset query dataset.yaml --sql "SELECT * FROM companies LIMIT 10"
+
+# Query with dot-notation field extraction
+anysite dataset query dataset.yaml --source profiles --fields "name, urn.value AS urn_id"
+
+# Interactive SQL shell
+anysite dataset query dataset.yaml --interactive
+
+# Column stats and data profiling
+anysite dataset stats dataset.yaml --source companies
+anysite dataset profile dataset.yaml
+
+# Load into PostgreSQL with automatic FK linking
+anysite dataset load-db dataset.yaml -c pg --drop-existing
+```
+
+## Database
+
+Manage database connections and run queries.
+
+```bash
+# Add a connection
+anysite db add pg
+
+# List and test connections
+anysite db list
+anysite db test pg
+
+# Query
+anysite db query pg --sql "SELECT * FROM companies" --format table
+
+# Insert data (auto-create table from schema inference)
+cat data.jsonl | anysite db insert pg --table users --stdin --auto-create
+
+# Upsert with conflict handling
+cat updates.jsonl | anysite db upsert pg --table users --conflict-columns id --stdin
+
+# Inspect schema
+anysite db schema pg --table users
+```
+
+Supports SQLite and PostgreSQL. Passwords stored as env var references.
+
 ## Configuration
 
 Configuration is stored in `~/.anysite/config.yaml`.
@@ -213,6 +308,9 @@ cd anysite-cli
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+
+# With dataset + database support
+pip install -e ".[dev,data]"
 ```
 
 ### Run Tests

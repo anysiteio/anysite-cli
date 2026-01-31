@@ -142,3 +142,22 @@ class MetadataStore:
         """Get metadata for all sources."""
         data = self.load()
         return data.get("sources", {})
+
+    def update_collected_inputs(
+        self, source_id: str, inputs: list[str]
+    ) -> None:
+        """Append collected input values to metadata for dedup tracking."""
+        data = self.load()
+        sources = data.setdefault("sources", {})
+        source_info = sources.setdefault(source_id, {})
+        existing = set(source_info.get("collected_inputs", []))
+        existing.update(str(v) for v in inputs)
+        source_info["collected_inputs"] = sorted(existing)
+        self.save(data)
+
+    def get_collected_inputs(self, source_id: str) -> set[str]:
+        """Get the set of already-collected input values for a source."""
+        info = self.get_source_info(source_id)
+        if info and "collected_inputs" in info:
+            return set(info["collected_inputs"])
+        return set()

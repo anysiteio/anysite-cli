@@ -212,3 +212,40 @@ class TestTopologicalSort:
         )
         with pytest.raises(SourceNotFoundError):
             config.topological_sort()
+
+
+class TestStoragePath:
+    def test_relative_to_yaml(self, tmp_path):
+        """Relative storage path should resolve against YAML file location."""
+        yaml_dir = tmp_path / "project"
+        yaml_dir.mkdir()
+        yaml_file = yaml_dir / "dataset.yaml"
+        yaml_file.write_text(yaml.dump({
+            "name": "test",
+            "sources": [{"id": "s1", "endpoint": "/api/s1"}],
+            "storage": {"path": "./data/"},
+        }))
+
+        config = DatasetConfig.from_yaml(yaml_file)
+        assert config.storage_path() == yaml_dir / "data"
+
+    def test_absolute_unchanged(self, tmp_path):
+        """Absolute storage path should stay as-is."""
+        yaml_file = tmp_path / "dataset.yaml"
+        yaml_file.write_text(yaml.dump({
+            "name": "test",
+            "sources": [{"id": "s1", "endpoint": "/api/s1"}],
+            "storage": {"path": "/absolute/data/"},
+        }))
+
+        config = DatasetConfig.from_yaml(yaml_file)
+        assert config.storage_path() == Path("/absolute/data/")
+
+    def test_no_config_dir_fallback(self):
+        """Programmatic config (no from_yaml) falls back to relative path."""
+        config = DatasetConfig(
+            name="test",
+            sources=[DatasetSource(id="s1", endpoint="/api/s1")],
+            storage=StorageConfig(path="./my_data/"),
+        )
+        assert config.storage_path() == Path("./my_data/")

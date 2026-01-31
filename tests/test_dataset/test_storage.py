@@ -128,3 +128,21 @@ class TestMetadataStore:
         assert len(all_sources) == 2
         assert "a" in all_sources
         assert "b" in all_sources
+
+    def test_update_and_get_collected_inputs(self, tmp_path):
+        """Roundtrip: store collected inputs and retrieve them."""
+        store = MetadataStore(tmp_path)
+        store.update_collected_inputs("src1", ["val_a", "val_b"])
+
+        result = store.get_collected_inputs("src1")
+        assert result == {"val_a", "val_b"}
+
+        # Append more, including a duplicate
+        store.update_collected_inputs("src1", ["val_b", "val_c"])
+        result = store.get_collected_inputs("src1")
+        assert result == {"val_a", "val_b", "val_c"}
+
+    def test_get_collected_inputs_empty_source(self, tmp_path):
+        """Unknown source returns empty set."""
+        store = MetadataStore(tmp_path)
+        assert store.get_collected_inputs("nonexistent") == set()

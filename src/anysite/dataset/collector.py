@@ -84,7 +84,10 @@ async def collect_dataset(
         ordered = _filter_sources(ordered, source_filter, config)
 
     if dry_run:
-        plan = _build_plan(ordered, config, base_path, metadata, incremental, today)
+        plan = _build_plan(
+            ordered, config, base_path, metadata, incremental, today,
+            config_dir=config_dir,
+        )
         return _print_plan(plan)
 
     results: dict[str, int] = {}
@@ -105,16 +108,31 @@ async def collect_dataset(
 
         if source.from_file is not None:
             file_base = config_dir if config_dir else Path.cwd()
-            records = await _collect_from_file(source, config_dir=file_base, quiet=quiet)
+            records = await _collect_from_file(
+                source, config_dir=file_base,
+                metadata=metadata, incremental=incremental, quiet=quiet,
+            )
         elif source.dependency is None:
             records = await _collect_independent(source)
         else:
-            records = await _collect_dependent(source, base_path, quiet=quiet)
+            records = await _collect_dependent(
+                source, base_path,
+                metadata=metadata, incremental=incremental, quiet=quiet,
+            )
 
         # Write to Parquet
         parquet_path = get_parquet_path(base_path, source.id, today)
         count = write_parquet(records, parquet_path)
         metadata.update_source(source.id, count, today)
+
+        # Track collected inputs for incremental dedup
+        if records:
+            input_values = [
+                r["_input_value"] for r in records if "_input_value" in r
+            ]
+            if input_values:
+                metadata.update_collected_inputs(source.id, input_values)
+
         results[source.id] = count
 
         if not quiet:
@@ -137,6 +155,8 @@ async def _collect_from_file(
     source: DatasetSource,
     *,
     config_dir: Path,
+    metadata: MetadataStore | None = None,
+    incremental: bool = False,
     quiet: bool = False,
 ) -> list[dict[str, Any]]:
     """Collect a source by iterating over values from an input file."""
@@ -177,6 +197,20 @@ async def _collect_from_file(
             print_warning(f"No values extracted from {file_path}")
         return []
 
+    # Filter already-collected inputs in incremental mode
+    if incremental and metadata:
+        already = metadata.get_collected_inputs(source.id)
+        if already:
+            original = len(values)
+            values = [v for v in values if str(v) not in already]
+            if not quiet and original != len(values):
+                print_info(f"  Skipping {original - len(values)} already-collected inputs")
+
+    if not values:
+        if not quiet:
+            print_info(f"  All inputs already collected for {source.id}")
+        return []
+
     if not quiet:
         print_info(f"  Found {len(values)} inputs from {file_path.name}")
 
@@ -187,9 +221,15 @@ async def _collect_batch(
     source: DatasetSource,
     values: list[Any],
     *,
+    parent_source: str | None = None,
     quiet: bool = False,
 ) -> list[dict[str, Any]]:
-    """Run batch API calls for a list of input values."""
+    """Run batch API calls for a list of input values.
+
+    Each resulting record is annotated with provenance metadata:
+    - ``_input_value``: the raw value used to make the API call
+    - ``_parent_source``: the source ID that produced the input (if dependent)
+    """
     limiter = RateLimiter(source.rate_limit) if source.rate_limit else None
     on_error = ErrorHandling(source.on_error) if source.on_error else ErrorHandling.SKIP
 
@@ -203,11 +243,25 @@ async def _collect_batch(
         # Apply input_template if defined
         if source.input_template:
             input_val = _apply_template(source.input_template, val)
+            # If template returns a dict, use it as the full payload
+            # (merged with static params), not nested under input_key
+            if isinstance(input_val, dict):
+                payload = {**source.params, **input_val}
+            else:
+                payload = {source.input_key: input_val, **source.params}  # type: ignore[dict-item]
         else:
-            input_val = val
-        payload = {source.input_key: input_val, **source.params}  # type: ignore[dict-item]
+            payload = {source.input_key: val, **source.params}  # type: ignore[dict-item]
         async with create_client() as client:
-            return await client.post(source.endpoint, data=payload)
+            result = await client.post(source.endpoint, data=payload)
+
+        # Annotate each record with provenance metadata so that
+        # child→parent relationships can be reconstructed later.
+        records = _flatten_results([result])
+        for record in records:
+            record["_input_value"] = str(val)
+            if parent_source:
+                record["_parent_source"] = parent_source
+        return records
 
     executor = BatchExecutor(
         func=_fetch_one,
@@ -220,7 +274,31 @@ async def _collect_batch(
     with tracker:
         batch_result = await executor.execute(values)
 
-    return _flatten_results(batch_result.results)
+    # _fetch_one returns lists of annotated dicts, but BatchExecutor
+    # wraps non-dict returns as {"data": result}. Handle both forms.
+    all_records: list[dict[str, Any]] = []
+    for item in batch_result.results:
+        if isinstance(item, list):
+            all_records.extend(r for r in item if isinstance(r, dict))
+        elif isinstance(item, dict):
+            data = item.get("data")
+            if isinstance(data, list):
+                all_records.extend(r for r in data if isinstance(r, dict))
+            elif isinstance(data, str):
+                # JSON-serialized list from Parquet roundtrip
+                import json
+
+                try:
+                    parsed = json.loads(data)
+                    if isinstance(parsed, list):
+                        all_records.extend(r for r in parsed if isinstance(r, dict))
+                    else:
+                        all_records.append(item)
+                except (json.JSONDecodeError, ValueError):
+                    all_records.append(item)
+            else:
+                all_records.append(item)
+    return all_records
 
 
 def _flatten_results(results: list[Any]) -> list[dict[str, Any]]:
@@ -244,6 +322,8 @@ async def _collect_dependent(
     source: DatasetSource,
     base_path: Path,
     *,
+    metadata: MetadataStore | None = None,
+    incremental: bool = False,
     quiet: bool = False,
 ) -> list[dict[str, Any]]:
     """Collect a dependent source by reading parent data and making per-value requests."""
@@ -273,7 +353,23 @@ async def _collect_dependent(
             f"Source {source.id} has a dependency but no input_key defined"
         )
 
-    return await _collect_batch(source, values, quiet=quiet)
+    # Filter already-collected inputs in incremental mode
+    if incremental and metadata:
+        already = metadata.get_collected_inputs(source.id)
+        if already:
+            original = len(values)
+            values = [v for v in values if str(v) not in already]
+            if not quiet and original != len(values):
+                print_info(f"  Skipping {original - len(values)} already-collected inputs")
+
+    if not values:
+        if not quiet:
+            print_info(f"  All inputs already collected for {source.id}")
+        return []
+
+    return await _collect_batch(
+        source, values, parent_source=dep.from_source, quiet=quiet
+    )
 
 
 def _apply_template(template: dict[str, Any], value: Any) -> dict[str, Any]:
@@ -286,8 +382,27 @@ def _apply_template(template: dict[str, Any], value: Any) -> dict[str, Any]:
             result[k] = v.replace("{value}", str(value))
         elif isinstance(v, dict):
             result[k] = _apply_template(v, value)
+        elif isinstance(v, list):
+            result[k] = _apply_template_list(v, value)
         else:
             result[k] = v
+    return result
+
+
+def _apply_template_list(template_list: list[Any], value: Any) -> list[Any]:
+    """Apply {value} replacement within list elements."""
+    result: list[Any] = []
+    for item in template_list:
+        if isinstance(item, str) and item == "{value}":
+            result.append(str(value) if not isinstance(value, (dict, list)) else value)
+        elif isinstance(item, str) and "{value}" in item:
+            result.append(item.replace("{value}", str(value)))
+        elif isinstance(item, dict):
+            result.append(_apply_template(item, value))
+        elif isinstance(item, list):
+            result.append(_apply_template_list(item, value))
+        else:
+            result.append(item)
     return result
 
 
@@ -378,8 +493,10 @@ def _build_plan(
     metadata: MetadataStore,
     incremental: bool,
     today: date,
+    *,
+    config_dir: Path | None = None,
 ) -> CollectionPlan:
-    """Build a dry-run plan."""
+    """Build a dry-run plan with estimated input counts."""
     plan = CollectionPlan()
 
     for source in ordered:
@@ -389,11 +506,13 @@ def _build_plan(
                 continue
 
         if source.from_file is not None:
+            est = _count_file_inputs(source, config_dir)
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
                 kind="from_file",
                 params={"file": source.from_file, "field": source.file_field},
+                estimated_requests=est,
             )
         elif source.dependency is None:
             plan.add_step(
@@ -401,11 +520,10 @@ def _build_plan(
                 endpoint=source.endpoint,
                 kind="independent",
                 params=source.params,
+                estimated_requests=1,
             )
         else:
-            # Estimate requests from parent data count
-            parent_info = metadata.get_source_info(source.dependency.from_source)
-            est = parent_info.get("record_count") if parent_info else None
+            est = _count_dependent_inputs(source, base_path, metadata)
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
@@ -415,6 +533,42 @@ def _build_plan(
             )
 
     return plan
+
+
+def _count_dependent_inputs(
+    source: DatasetSource, base_path: Path, metadata: MetadataStore
+) -> int | None:
+    """Count extractable input values from parent Parquet data."""
+    dep = source.dependency
+    if dep is None:
+        return None
+    parent_dir = base_path / "raw" / dep.from_source
+    parent_records = read_parquet(parent_dir)
+    if not parent_records:
+        info = metadata.get_source_info(dep.from_source)
+        return info.get("record_count") if info else None
+    values = _extract_values(parent_records, dep.field, dep.match_by, dep.dedupe)
+    return len(values)
+
+
+def _count_file_inputs(
+    source: DatasetSource, config_dir: Path | None
+) -> int | None:
+    """Count input values in a from_file source."""
+    if not source.from_file:
+        return None
+    file_path = Path(source.from_file)
+    if not file_path.is_absolute() and config_dir:
+        file_path = config_dir / file_path
+    if not file_path.exists():
+        return None
+    try:
+        from anysite.batch.input import InputParser
+
+        raw_inputs = InputParser.from_file(file_path)
+        return len(raw_inputs)
+    except Exception:
+        return None
 
 
 def _print_plan(plan: CollectionPlan) -> dict[str, int]:

@@ -101,6 +101,55 @@ class TestProfile:
         assert results[0]["status"] == "no data"
 
 
+class TestExpandDotFields:
+    def test_simple_fields(self):
+        from anysite.dataset.analyzer import expand_dot_fields
+
+        assert expand_dot_fields("name, age") == "name, age"
+
+    def test_nested_field_with_alias(self):
+        from anysite.dataset.analyzer import expand_dot_fields
+
+        result = expand_dot_fields("urn.value AS urn_id")
+        assert result == "json_extract_string(urn, '$.value') AS urn_id"
+
+    def test_multi_level(self):
+        from anysite.dataset.analyzer import expand_dot_fields
+
+        result = expand_dot_fields("a.b.c")
+        assert result == "json_extract_string(a, '$.b.c')"
+
+    def test_mixed_fields(self):
+        from anysite.dataset.analyzer import expand_dot_fields
+
+        result = expand_dot_fields("name, urn.value AS id, age")
+        assert result == "name, json_extract_string(urn, '$.value') AS id, age"
+
+    def test_integration_with_duckdb(self, tmp_path):
+        """Verify expanded fields work with actual DuckDB queries on JSON data."""
+        import json
+
+        from anysite.dataset.analyzer import expand_dot_fields
+
+        config = _make_config(tmp_path, {
+            "items": [
+                {"name": "Alice", "meta": json.dumps({"type": "user", "id": 42})},
+                {"name": "Bob", "meta": json.dumps({"type": "admin", "id": 99})},
+            ],
+        })
+
+        fields_sql = expand_dot_fields("name, meta.type AS role, meta.id AS uid")
+
+        with DatasetAnalyzer(config) as analyzer:
+            results = analyzer.query(f"SELECT {fields_sql} FROM items")
+
+        assert len(results) == 2
+        names = {r["name"] for r in results}
+        assert names == {"Alice", "Bob"}
+        roles = {r["role"] for r in results}
+        assert roles == {"user", "admin"}
+
+
 class TestListViews:
     def test_list_views(self, tmp_path):
         config = _make_config(tmp_path)

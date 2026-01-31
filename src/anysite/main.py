@@ -484,6 +484,14 @@ try:
 except ImportError:
     pass
 
+# Register db subcommand (SQLite always available, PostgreSQL needs optional deps)
+try:
+    from anysite.db.cli import app as db_app
+
+    app.add_typer(db_app, name="db", help="Store API data in SQL databases")
+except ImportError:
+    pass
+
 
 if __name__ == "__main__":
     app()

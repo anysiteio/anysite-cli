@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
 
@@ -25,6 +25,17 @@ class SourceDependency(BaseModel):
         description="Field for fuzzy matching by name",
     )
     dedupe: bool = Field(default=False, description="Deduplicate extracted values")
+
+
+class DbLoadConfig(BaseModel):
+    """Configuration for loading a source into a relational database."""
+
+    table: str | None = Field(default=None, description="Override table name (default: source id)")
+    fields: list[str] = Field(default_factory=list, description="Fields to include (empty = all)")
+    exclude: list[str] = Field(
+        default_factory=lambda: ["_input_value", "_parent_source"],
+        description="Fields to exclude (default: provenance metadata)",
+    )
 
 
 class DatasetSource(BaseModel):
@@ -56,6 +67,10 @@ class DatasetSource(BaseModel):
     parallel: int = Field(default=1, ge=1, description="Parallel requests for dependent collection")
     rate_limit: str | None = Field(default=None, description="Rate limit (e.g., '10/s')")
     on_error: str = Field(default="skip", description="Error handling: stop or skip")
+    db_load: DbLoadConfig | None = Field(
+        default=None,
+        description="Database loading configuration (optional)",
+    )
 
     @field_validator("endpoint")
     @classmethod
@@ -84,6 +99,8 @@ class DatasetConfig(BaseModel):
     sources: list[DatasetSource] = Field(description="Data sources to collect")
     storage: StorageConfig = Field(default_factory=StorageConfig)
 
+    _config_dir: Path | None = PrivateAttr(default=None)
+
     @field_validator("sources")
     @classmethod
     def validate_unique_ids(cls, v: list[DatasetSource]) -> list[DatasetSource]:
@@ -98,7 +115,9 @@ class DatasetConfig(BaseModel):
         """Load dataset configuration from a YAML file."""
         with open(path) as f:
             data = yaml.safe_load(f)
-        return cls.model_validate(data)
+        config = cls.model_validate(data)
+        config._config_dir = path.resolve().parent
+        return config
 
     def get_source(self, source_id: str) -> DatasetSource | None:
         """Get a source by ID."""
@@ -154,5 +173,13 @@ class DatasetConfig(BaseModel):
         return result
 
     def storage_path(self) -> Path:
-        """Resolve the storage base path."""
-        return Path(self.storage.path)
+        """Resolve the storage base path.
+
+        Relative paths are resolved against the directory containing the
+        YAML config file (set by ``from_yaml``).  Absolute paths and
+        programmatic configs (no config dir) use the path as-is.
+        """
+        p = Path(self.storage.path)
+        if not p.is_absolute() and self._config_dir is not None:
+            return self._config_dir / p
+        return p

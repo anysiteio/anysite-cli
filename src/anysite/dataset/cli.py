@@ -204,18 +204,32 @@ def query(
     ] = None,
     fields: Annotated[
         str | None,
-        typer.Option("--fields", help="Comma-separated fields to include"),
+        typer.Option("--fields", help="Comma-separated fields to include (supports dot-notation, e.g. 'name, urn.value AS urn_id')"),
+    ] = None,
+    source: Annotated[
+        str | None,
+        typer.Option("--source", "-s", help="Source to query (auto-generates SELECT query)"),
     ] = None,
 ) -> None:
     """Run SQL queries against collected dataset data using DuckDB."""
     config = _load_config(config_path)
 
-    from anysite.dataset.analyzer import DatasetAnalyzer
+    from anysite.dataset.analyzer import DatasetAnalyzer, expand_dot_fields
 
     with DatasetAnalyzer(config) as analyzer:
         if interactive:
             analyzer.interactive_shell()
             return
+
+        # Auto-generate SQL from --source + --fields
+        if source and not sql and not file:
+            view_name = source.replace("-", "_").replace(".", "_")
+            if fields:
+                select_expr = expand_dot_fields(fields)
+                fields = None  # Already in SQL, don't post-filter
+            else:
+                select_expr = "*"
+            sql = f"SELECT {select_expr} FROM {view_name}"
 
         if file:
             if not file.exists():
@@ -224,7 +238,7 @@ def query(
             sql = file.read_text().strip()
 
         if not sql:
-            typer.echo("Error: provide --sql, --file, or --interactive", err=True)
+            typer.echo("Error: provide --sql, --file, --source, or --interactive", err=True)
             raise typer.Exit(1)
 
         try:
@@ -306,6 +320,88 @@ def profile(
             raise typer.Exit(1) from None
 
         _output_results(results, format, output)
+
+
+@app.command("load-db")
+def load_db(
+    config_path: Annotated[
+        Path,
+        typer.Argument(help="Path to dataset.yaml"),
+    ],
+    connection: Annotated[
+        str,
+        typer.Option("--connection", "-c", help="Database connection name"),
+    ],
+    source: Annotated[
+        str | None,
+        typer.Option("--source", "-s", help="Load only this source (and dependencies)"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show plan without executing"),
+    ] = False,
+    drop_existing: Annotated[
+        bool,
+        typer.Option("--drop-existing", help="Drop tables before creating"),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Suppress progress output"),
+    ] = False,
+) -> None:
+    """Load collected Parquet data into a relational database with FK linking."""
+    config = _load_config(config_path)
+
+    from anysite.db.manager import ConnectionManager
+
+    manager = ConnectionManager()
+    try:
+        adapter = manager.get_adapter_by_name(connection)
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from None
+
+    from anysite.dataset.db_loader import DatasetDbLoader
+
+    with adapter:
+        loader = DatasetDbLoader(config, adapter)
+        try:
+            results = loader.load_all(
+                source_filter=source,
+                drop_existing=drop_existing,
+                dry_run=dry_run,
+            )
+        except Exception as e:
+            typer.echo(f"Load error: {e}", err=True)
+            raise typer.Exit(1) from None
+
+    if not quiet:
+        console = Console()
+        if dry_run:
+            console.print("[bold]Dry run — no tables modified.[/bold]")
+
+        table = Table(title="Load Results")
+        table.add_column("Source", style="bold")
+        table.add_column("Table")
+        table.add_column("Rows", justify="right")
+
+        from anysite.dataset.db_loader import _table_name_for
+
+        for src in config.sources:
+            if src.id in results:
+                table.add_row(
+                    src.id,
+                    _table_name_for(src),
+                    str(results[src.id]),
+                )
+
+        console.print(table)
+
+        total = sum(results.values())
+        console.print(
+            f"\n[bold green]{'Would load' if dry_run else 'Loaded'}[/bold green] "
+            f"{total} rows across {len(results)} tables."
+        )
 
 
 def _output_results(

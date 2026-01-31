@@ -2,10 +2,47 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from anysite.dataset.models import DatasetConfig
 from anysite.dataset.storage import get_source_dir
+
+
+def expand_dot_fields(fields_str: str) -> str:
+    """Convert dot-notation field specs to DuckDB SQL expressions.
+
+    Simple fields pass through unchanged.  Dotted fields are converted to
+    ``json_extract_string`` calls so that nested values stored as JSON
+    strings in Parquet can be extracted directly.
+
+    Examples::
+
+        "name, age"                  -> "name, age"
+        "urn.value AS urn_id"        -> "json_extract_string(urn, '$.value') AS urn_id"
+        "author.name"                -> "json_extract_string(author, '$.name')"
+        "a.b.c"                      -> "json_extract_string(a, '$.b.c')"
+    """
+    parts: list[str] = []
+    for spec in fields_str.split(","):
+        spec = spec.strip()
+        if not spec:
+            continue
+
+        # Detect optional AS alias (case-insensitive)
+        alias = ""
+        as_match = re.search(r"\s+[Aa][Ss]\s+(\w+)$", spec)
+        if as_match:
+            alias = f" AS {as_match.group(1)}"
+            spec = spec[: as_match.start()]
+
+        if "." in spec:
+            col, rest = spec.split(".", 1)
+            parts.append(f"json_extract_string({col}, '$.{rest}'){alias}")
+        else:
+            parts.append(f"{spec}{alias}")
+
+    return ", ".join(parts)
 
 
 def _get_duckdb() -> Any:
