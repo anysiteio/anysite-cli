@@ -26,6 +26,15 @@ def get_config_path() -> Path:
     return get_config_dir() / "config.yaml"
 
 
+def get_schema_cache_path() -> Path:
+    """Get the schema cache file path.
+
+    Returns:
+        Path to schema.json in the config directory.
+    """
+    return get_config_dir() / "schema.json"
+
+
 def ensure_config_dir() -> Path:
     """Ensure the configuration directory exists.
 

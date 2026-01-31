@@ -92,7 +92,8 @@ class AnysiteClient:
 
         # Try to parse error details from JSON
         try:
-            error_data = response.json()
+            raw = response.json()
+            error_data = raw if isinstance(raw, dict) else {"detail": raw}
         except Exception:
             error_data = {"detail": response.text}
 
@@ -102,7 +103,7 @@ class AnysiteClient:
 
         if status_code == 404:
             detail = error_data.get("detail", "Resource not found")
-            raise NotFoundError(message=detail, details=error_data)
+            raise NotFoundError(resource=str(detail), details=error_data)
 
         if status_code == 422:
             # Validation error - FastAPI format
