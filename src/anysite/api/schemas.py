@@ -119,6 +119,7 @@ def _extract_input(spec: dict[str, Any], method_data: dict[str, Any]) -> dict[st
         result[field_name] = {
             "type": _simplify_type(resolved_field),
             "required": field_name in required_fields,
+            "description": resolved_field.get("description", ""),
         }
     return result
 
@@ -135,7 +136,7 @@ def extract_endpoint_info(
     Returns:
         Dict with description, tags, input, output.
     """
-    description = method_data.get("summary", "") or method_data.get("description", "")
+    description = method_data.get("description", "") or method_data.get("summary", "")
     tags = method_data.get("tags", [])
 
     # Extract input params

@@ -202,7 +202,9 @@ def describe(
             console.print("[bold]Input parameters:[/bold]")
             for name, info in input_params.items():
                 req = "[red]*[/red]" if info.get("required") else " "
-                console.print(f"  {req} {name:<30} [dim]{info['type']}[/dim]")
+                desc = info.get("description", "")
+                desc_part = f"  [dim italic]{desc}[/dim italic]" if desc else ""
+                console.print(f"  {req} {name:<30} [dim]{info['type']:<10}[/dim]{desc_part}")
             console.print()
 
         output_fields = schema.get("output", {})

@@ -30,94 +30,65 @@ Or set environment variable:
 export ANYSITE_API_KEY=sk-xxxxx
 ```
 
-### 2. Make your first request
+### 2. Update the schema cache
 
 ```bash
-anysite linkedin user satyanadella
+anysite schema update
 ```
 
-## Commands
-
-### LinkedIn
+### 3. Make your first request
 
 ```bash
-# Get user profile
-anysite linkedin user satyanadella
-anysite linkedin user satyanadella --format table
-anysite linkedin user satyanadella --fields "name,headline,follower_count"
-
-# Search users
-anysite linkedin users --keywords "CTO fintech" --count 20
-anysite linkedin users --title "Director" --company "Google" --count 50
-
-# Company info
-anysite linkedin company anthropic
-anysite linkedin company-employees anthropic --count 50
-anysite linkedin company-posts anthropic --count 20
-
-# Search posts
-anysite linkedin posts --keywords "AI agents" --count 50
+anysite api /api/linkedin/user user=satyanadella
 ```
 
-### Instagram
+## The `api` Command
+
+A single universal command for calling any API endpoint:
 
 ```bash
-# Get user profile
-anysite instagram user cristiano
-anysite instagram user nike --format table
-
-# Get user content
-anysite instagram user-posts nike --count 20
-anysite instagram user-reels nike --count 10
-
-# Get post details
-anysite instagram post CxYz123abc
-
-# Search posts
-anysite instagram search-posts --query "startup" --count 20
+anysite api <endpoint> [key=value ...] [OPTIONS]
 ```
 
-### Twitter/X
+Parameters are passed as `key=value` pairs. Types are auto-converted using the schema cache.
 
 ```bash
-# Get user profile
-anysite twitter user elonmusk
-anysite twitter user openai --format table
+# LinkedIn
+anysite api /api/linkedin/user user=satyanadella
+anysite api /api/linkedin/company company=anthropic
+anysite api /api/linkedin/search/users title=CTO count=50 --format csv
 
-# Get user posts
-anysite twitter user-posts elonmusk --count 20
+# Instagram
+anysite api /api/instagram/user user=cristiano
+anysite api /api/instagram/user/posts user=nike count=20
 
-# Search
-anysite twitter search-posts --query "AI agents" --count 50
-anysite twitter search-users --query "AI researcher" --count 20
+# Twitter/X
+anysite api /api/twitter/user user=elonmusk --format table
+
+# Web parsing
+anysite api /api/web/parse url=https://example.com
+
+# Y Combinator
+anysite api /api/yc/company company=anthropic
 ```
 
-### Web Parser
+## Endpoint Discovery
+
+Browse and search all available API endpoints:
 
 ```bash
-# Parse web page
-anysite web parse https://example.com
-anysite web parse https://blog.example.com --only-main-content
-anysite web parse https://company.com --extract-contacts
-anysite web parse https://company.com --social-links-only
+# List all endpoints
+anysite describe
 
-# Get sitemap
-anysite web sitemap https://example.com --count 100
-```
+# Describe a specific endpoint (input params + output fields)
+anysite describe /api/linkedin/company
+anysite describe linkedin.user
 
-### Y Combinator
+# Search by keyword
+anysite describe --search "company"
 
-```bash
-# Get company info
-anysite yc company anthropic
-anysite yc company stripe --format table
-
-# Search companies
-anysite yc search-companies --query "AI" --count 20
-anysite yc search-companies --batch W24 --industry "B2B"
-
-# Search founders
-anysite yc search-founders --query "ML" --count 20
+# JSON output for scripts/agents
+anysite describe --json -q
 ```
 
 ## Output Formats
@@ -131,23 +102,60 @@ anysite yc search-founders --query "ML" --count 20
 
 ## Field Selection
 
-Reduce output size by selecting specific fields:
-
 ```bash
-anysite linkedin user satyanadella --fields "name,headline,follower_count"
+# Include specific fields (dot notation and wildcards supported)
+anysite api /api/linkedin/user user=satyanadella --fields "name,headline,follower_count"
+
+# Exclude fields
+anysite api /api/linkedin/user user=satyanadella --exclude "certifications,recommendations"
+
+# Compact JSON
+anysite api /api/linkedin/user user=satyanadella --compact
 ```
+
+Built-in field presets: `minimal`, `contact`, `recruiting`.
 
 ## Save to File
 
 ```bash
-anysite linkedin users --keywords "CTO" --count 100 --output ctos.json
+anysite api /api/linkedin/search/users title=CTO count=100 --output ctos.json
+anysite api /api/linkedin/search/users title=CTO count=100 --output ctos.csv --format csv
 ```
 
 ## Pipe to jq
 
 ```bash
-anysite linkedin user satyanadella -q | jq '.follower_count'
+anysite api /api/linkedin/user user=satyanadella -q | jq '.follower_count'
 ```
+
+## Batch Processing
+
+Process multiple inputs from a file or stdin:
+
+```bash
+# From a text file (one value per line)
+anysite api /api/linkedin/user --from-file users.txt --input-key user
+
+# From JSONL (one JSON object per line)
+anysite api /api/linkedin/user --from-file users.jsonl
+
+# From stdin
+cat users.txt | anysite api /api/linkedin/user --stdin --input-key user
+
+# Parallel execution
+anysite api /api/linkedin/user --from-file users.txt --input-key user --parallel 5
+
+# Rate limiting
+anysite api /api/linkedin/user --from-file users.txt --input-key user --rate-limit "10/s"
+
+# Error handling
+anysite api /api/linkedin/user --from-file users.txt --input-key user --on-error skip
+
+# Progress bar and stats
+anysite api /api/linkedin/user --from-file users.txt --input-key user --progress --stats
+```
+
+Input file formats: plain text (one value per line), JSONL, CSV.
 
 ## Configuration
 
@@ -169,6 +177,9 @@ anysite config path
 
 # Initialize interactively
 anysite config init
+
+# Reset to defaults
+anysite config reset --force
 ```
 
 ### Configuration Priority
@@ -197,15 +208,10 @@ Options:
 ### Setup
 
 ```bash
-# Clone the repository
 git clone https://github.com/anysite/anysite-cli.git
 cd anysite-cli
-
-# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# Install with dev dependencies
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -219,8 +225,8 @@ pytest --cov=anysite --cov-report=term-missing
 ### Linting
 
 ```bash
-ruff check .
-ruff format .
+ruff check src/
+ruff format src/
 mypy src/
 ```
 
