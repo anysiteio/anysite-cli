@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anysite-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "CLI for Anysite API - web data extraction for humans and AI agents"
 readme = "README.md"
 license = "MIT"
@@ -54,6 +54,13 @@ mysql = [
     "pymysql>=1.1.0",
 ]
 db = [
+    "psycopg[binary]>=3.1.0",
+    "pymysql>=1.1.0",
+]
+all = [
+    "duckdb>=1.0.0",
+    "pyarrow>=15.0.0",
+    "httpx>=0.25.0",
     "psycopg[binary]>=3.1.0",
     "pymysql>=1.1.0",
 ]

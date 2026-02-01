@@ -8,11 +8,21 @@ Web data extraction for humans and AI agents.
 pip install anysite-cli
 ```
 
+Optional extras:
+
+```bash
+pip install "anysite-cli[data]"       # DuckDB + PyArrow for dataset pipelines
+pip install "anysite-cli[postgres]"   # PostgreSQL support
+pip install "anysite-cli[all]"        # All optional dependencies
+```
+
 Or install from source:
 
 ```bash
 git clone https://github.com/anysiteio/anysite-cli.git
 cd anysite-cli
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
@@ -263,8 +273,10 @@ anysite dataset reset-cursor dataset.yaml
 Manage database connections and run queries.
 
 ```bash
-# Add a connection
-anysite db add pg
+# Add a connection (--password auto-stores via env var reference)
+anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
+# Or reference an existing env var
+anysite db add pg --type postgres --host localhost --database mydb --user app --password-env PGPASS
 
 # List and test connections
 anysite db list

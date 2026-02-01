@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -59,6 +60,10 @@ def add(
         str | None,
         typer.Option("--user", "-u", help="Database user"),
     ] = None,
+    password: Annotated[
+        str | None,
+        typer.Option("--password", help="Database password (stored via auto-generated env var)"),
+    ] = None,
     password_env: Annotated[
         str | None,
         typer.Option("--password-env", help="Env var containing password"),
@@ -84,6 +89,17 @@ def add(
       anysite db add prod --type postgres --host db.example.com --database analytics --user app --password-env DB_PASS
       anysite db add remote --type postgres --url-env DATABASE_URL
     """
+    if password and password_env:
+        typer.echo("Error: --password and --password-env are mutually exclusive", err=True)
+        raise typer.Exit(1)
+
+    generated_env_var: str | None = None
+    if password:
+        safe_name = name.upper().replace("-", "_").replace(".", "_")
+        generated_env_var = f"ANYSITE_DB_{safe_name}_PASS"
+        os.environ[generated_env_var] = password
+        password_env = generated_env_var
+
     try:
         config = ConnectionConfig(
             name=name,
@@ -106,6 +122,12 @@ def add(
 
     console = Console()
     console.print(f"[green]Added[/green] connection '{name}' ({type.value})")
+    if generated_env_var:
+        console.print(
+            f"[dim]Password stored via env var {generated_env_var}. "
+            f"Export it in your shell for future sessions: "
+            f"export {generated_env_var}=\"...\"[/dim]"
+        )
 
 
 @app.command("list")
