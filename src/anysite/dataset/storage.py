@@ -161,3 +161,11 @@ class MetadataStore:
         if info and "collected_inputs" in info:
             return set(info["collected_inputs"])
         return set()
+
+    def reset_collected_inputs(self, source_id: str) -> None:
+        """Clear collected input tracking for a source (forces re-collection)."""
+        data = self.load()
+        source_info = data.get("sources", {}).get(source_id, {})
+        if "collected_inputs" in source_info:
+            del source_info["collected_inputs"]
+            self.save(data)

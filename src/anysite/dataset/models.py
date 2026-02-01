@@ -4,12 +4,62 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
+
+# ---------------------------------------------------------------------------
+# New models for transform / export / schedule / notifications
+# ---------------------------------------------------------------------------
+
+
+class TransformConfig(BaseModel):
+    """Per-source transform: filter → select fields → add columns."""
+
+    filter: str | None = Field(default=None, description="Filter expression (e.g., '.employee_count > 10')")
+    fields: list[str] = Field(default_factory=list, description="Fields to keep (empty = all)")
+    add_columns: dict[str, Any] = Field(default_factory=dict, description="Static columns to add")
+
+
+class ExportDestination(BaseModel):
+    """Per-source export destination (file or webhook)."""
+
+    type: Literal["file", "webhook"] = Field(description="Export type")
+    path: str | None = Field(default=None, description="Output file path (file type)")
+    format: str = Field(default="jsonl", description="File format: json, jsonl, csv")
+    url: str | None = Field(default=None, description="Webhook URL (webhook type)")
+    headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers for webhook")
+
+    @model_validator(mode="after")
+    def validate_type_fields(self) -> ExportDestination:
+        if self.type == "file" and not self.path:
+            raise ValueError("File export requires 'path'")
+        if self.type == "webhook" and not self.url:
+            raise ValueError("Webhook export requires 'url'")
+        return self
+
+
+class ScheduleConfig(BaseModel):
+    """Cron-based schedule for dataset collection."""
+
+    cron: str = Field(description="Cron expression (e.g., '0 9 * * MON')")
+
+
+class WebhookNotification(BaseModel):
+    """A single webhook notification endpoint."""
+
+    url: str = Field(description="Webhook URL")
+    headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers")
+
+
+class NotificationsConfig(BaseModel):
+    """Notification webhooks for collection events."""
+
+    on_complete: list[WebhookNotification] = Field(default_factory=list)
+    on_failure: list[WebhookNotification] = Field(default_factory=list)
 
 
 class SourceDependency(BaseModel):
@@ -71,6 +121,14 @@ class DatasetSource(BaseModel):
         default=None,
         description="Database loading configuration (optional)",
     )
+    transform: TransformConfig | None = Field(
+        default=None,
+        description="Post-collection transform (filter/fields/add_columns)",
+    )
+    export: list[ExportDestination] = Field(
+        default_factory=list,
+        description="Export destinations (file/webhook) applied after Parquet write",
+    )
 
     @field_validator("endpoint")
     @classmethod
@@ -98,6 +156,8 @@ class DatasetConfig(BaseModel):
     description: str = Field(default="", description="Dataset description")
     sources: list[DatasetSource] = Field(description="Data sources to collect")
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    schedule: ScheduleConfig | None = Field(default=None, description="Collection schedule")
+    notifications: NotificationsConfig | None = Field(default=None, description="Webhook notifications")
 
     _config_dir: Path | None = PrivateAttr(default=None)
 

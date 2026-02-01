@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -22,6 +25,8 @@ from anysite.dataset.storage import (
 from anysite.output.console import print_info, print_success, print_warning
 from anysite.streaming.progress import ProgressTracker
 from anysite.utils.fields import extract_field, parse_field_path
+
+logger = logging.getLogger(__name__)
 
 
 class CollectionPlan:
@@ -75,6 +80,7 @@ async def collect_dataset(
     base_path = config.storage_path()
     metadata = MetadataStore(base_path)
     today = date.today()
+    start_time = time.monotonic()
 
     # Get execution order
     ordered = config.topological_sort()
@@ -90,53 +96,126 @@ async def collect_dataset(
         )
         return _print_plan(plan)
 
+    # Record run start in history
+    run_id: int | None = None
+    log_handler: logging.Handler | None = None
+    try:
+        from anysite.dataset.history import HistoryStore, LogManager
+
+        history = HistoryStore()
+        run_id = history.record_start(config.name)
+        log_mgr = LogManager()
+        log_handler = log_mgr.create_handler(config.name, run_id)
+        logging.getLogger("anysite").addHandler(log_handler)
+    except Exception:
+        pass
+
     results: dict[str, int] = {}
+    total_records = 0
+    error_msg: str | None = None
 
-    for source in ordered:
-        # Check incremental skip
-        if incremental:
+    try:
+        for source in ordered:
+            # Check incremental skip
+            if incremental:
+                parquet_path = get_parquet_path(base_path, source.id, today)
+                if parquet_path.exists():
+                    if not quiet:
+                        print_info(f"Skipping {source.id} (already collected today)")
+                    info = metadata.get_source_info(source.id)
+                    results[source.id] = info.get("record_count", 0) if info else 0
+                    continue
+
+            if not quiet:
+                print_info(f"Collecting {source.id} from {source.endpoint}...")
+
+            if source.from_file is not None:
+                file_base = config_dir if config_dir else Path.cwd()
+                records = await _collect_from_file(
+                    source, config_dir=file_base,
+                    metadata=metadata, incremental=incremental, quiet=quiet,
+                )
+            elif source.dependency is None:
+                records = await _collect_independent(source)
+            else:
+                records = await _collect_dependent(
+                    source, base_path,
+                    metadata=metadata, incremental=incremental, quiet=quiet,
+                )
+
+            # Write FULL records to Parquet (preserves all fields for dependency resolution)
             parquet_path = get_parquet_path(base_path, source.id, today)
-            if parquet_path.exists():
-                if not quiet:
-                    print_info(f"Skipping {source.id} (already collected today)")
-                info = metadata.get_source_info(source.id)
-                results[source.id] = info.get("record_count", 0) if info else 0
-                continue
+            count = write_parquet(records, parquet_path)
+            metadata.update_source(source.id, count, today)
 
-        if not quiet:
-            print_info(f"Collecting {source.id} from {source.endpoint}...")
+            # Apply per-source transform for exports only (does NOT affect Parquet)
+            export_records = records
+            if source.transform and records:
+                from anysite.dataset.transformer import RecordTransformer
 
-        if source.from_file is not None:
-            file_base = config_dir if config_dir else Path.cwd()
-            records = await _collect_from_file(
-                source, config_dir=file_base,
-                metadata=metadata, incremental=incremental, quiet=quiet,
-            )
-        elif source.dependency is None:
-            records = await _collect_independent(source)
-        else:
-            records = await _collect_dependent(
-                source, base_path,
-                metadata=metadata, incremental=incremental, quiet=quiet,
-            )
+                transformer = RecordTransformer(source.transform)
+                before = len(records)
+                export_records = transformer.apply([dict(r) for r in records])
+                if not quiet and len(export_records) != before:
+                    print_info(f"  Transform: {before} -> {len(export_records)} records")
 
-        # Write to Parquet
-        parquet_path = get_parquet_path(base_path, source.id, today)
-        count = write_parquet(records, parquet_path)
-        metadata.update_source(source.id, count, today)
+            # Run per-source exports with transformed records
+            if source.export and export_records:
+                from anysite.dataset.exporters import run_exports
 
-        # Track collected inputs for incremental dedup
-        if records:
-            input_values = [
-                r["_input_value"] for r in records if "_input_value" in r
-            ]
-            if input_values:
-                metadata.update_collected_inputs(source.id, input_values)
+                await run_exports(export_records, source.export, source.id, config.name)
 
-        results[source.id] = count
+            # Track collected inputs for incremental dedup
+            if records:
+                input_values = [
+                    r["_input_value"] for r in records if "_input_value" in r
+                ]
+                if input_values:
+                    metadata.update_collected_inputs(source.id, input_values)
 
-        if not quiet:
-            print_success(f"Collected {count} records for {source.id}")
+            results[source.id] = count
+            total_records += count
+
+            if not quiet:
+                print_success(f"Collected {count} records for {source.id}")
+
+    except Exception as e:
+        error_msg = str(e)
+        raise
+    finally:
+        duration = time.monotonic() - start_time
+
+        # Record finish in history
+        if run_id is not None:
+            with contextlib.suppress(Exception):
+                history.record_finish(  # type: ignore[possibly-undefined]
+                    run_id,
+                    status="failed" if error_msg else "success",
+                    record_count=total_records,
+                    source_count=len(results),
+                    error=error_msg,
+                    duration=duration,
+                )
+
+        # Send notifications
+        if config.notifications:
+            try:
+                from anysite.dataset.notifications import WebhookNotifier
+
+                notifier = WebhookNotifier(config.notifications)
+                if error_msg:
+                    await notifier.notify_failure(config.name, error_msg, duration)
+                else:
+                    await notifier.notify_complete(
+                        config.name, total_records, len(results), duration,
+                    )
+            except Exception as ne:
+                logger.error("Notification error: %s", ne)
+
+        # Remove log handler
+        if log_handler:
+            logging.getLogger("anysite").removeHandler(log_handler)
+            log_handler.close()
 
     return results
 
