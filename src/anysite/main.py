@@ -244,7 +244,7 @@ def schema_update() -> None:
 
 @app.command(
     "api",
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": True},
 )
 def api_call(
     ctx: typer.Context,
