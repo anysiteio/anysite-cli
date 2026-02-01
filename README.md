@@ -11,7 +11,7 @@ pip install anysite-cli
 Or install from source:
 
 ```bash
-git clone https://github.com/anysite/anysite-cli.git
+git clone https://github.com/anysiteio/anysite-cli.git
 cd anysite-cli
 pip install -e .
 ```
@@ -159,7 +159,7 @@ Input file formats: plain text (one value per line), JSONL, CSV.
 
 ## Dataset Pipelines
 
-Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database.
+Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database. Includes per-source transforms, file/webhook exports, run history, scheduling, and webhook notifications.
 
 ### Create a dataset
 
@@ -176,6 +176,17 @@ sources:
     endpoint: /api/linkedin/company
     from_file: companies.txt
     input_key: company
+    transform:                          # Post-collection transform (for exports)
+      filter: '.employee_count > 10'
+      fields: [name, url, employee_count]
+      add_columns:
+        batch: "q1-2026"
+    export:                             # Export to file/webhook after Parquet write
+      - type: file
+        path: ./output/companies-{{date}}.csv
+        format: csv
+    db_load:
+      fields: [name, url, employee_count]
 
   - id: employees
     endpoint: /api/linkedin/company/employees
@@ -194,6 +205,15 @@ sources:
 storage:
   format: parquet
   path: ./data/
+
+schedule:
+  cron: "0 9 * * *"                    # Daily at 9 AM
+
+notifications:
+  on_complete:
+    - url: "https://hooks.slack.com/xxx"
+  on_failure:
+    - url: "https://alerts.example.com/fail"
 ```
 
 ### Collect, query, and load
@@ -204,6 +224,9 @@ anysite dataset collect dataset.yaml --dry-run
 
 # Collect data (supports --incremental to skip already-collected inputs)
 anysite dataset collect dataset.yaml
+
+# Collect and auto-load into PostgreSQL
+anysite dataset collect dataset.yaml --load-db pg
 
 # Check status
 anysite dataset status dataset.yaml
@@ -223,6 +246,16 @@ anysite dataset profile dataset.yaml
 
 # Load into PostgreSQL with automatic FK linking
 anysite dataset load-db dataset.yaml -c pg --drop-existing
+
+# Run history and logs
+anysite dataset history my-dataset
+anysite dataset logs my-dataset --run 42
+
+# Generate cron/systemd schedule
+anysite dataset schedule dataset.yaml --incremental --load-db pg
+
+# Reset incremental state
+anysite dataset reset-cursor dataset.yaml
 ```
 
 ## Database
@@ -298,12 +331,26 @@ Options:
   --help             Show help
 ```
 
+## Claude Code Skill
+
+Install the anysite-cli skill for Claude Code to get AI-assisted data collection:
+
+```bash
+# Add marketplace
+/plugin marketplace add https://github.com/anysiteio/agent-skills
+
+# Install skill
+/plugin install anysite-cli@anysite-skills
+```
+
+The skill gives Claude Code knowledge of all anysite commands, dataset pipeline configuration, and database operations.
+
 ## Development
 
 ### Setup
 
 ```bash
-git clone https://github.com/anysite/anysite-cli.git
+git clone https://github.com/anysiteio/anysite-cli.git
 cd anysite-cli
 python -m venv .venv
 source .venv/bin/activate

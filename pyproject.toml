@@ -22,7 +22,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
     "Topic :: Utilities",
 ]
 
@@ -42,6 +45,7 @@ dependencies = [
 data = [
     "duckdb>=1.0.0",
     "pyarrow>=15.0.0",
+    "httpx>=0.25.0",
 ]
 postgres = [
     "psycopg[binary]>=3.1.0",
@@ -70,8 +74,8 @@ anysite = "anysite.main:app"
 [project.urls]
 Homepage = "https://anysite.io"
 Documentation = "https://docs.anysite.io/cli"
-Repository = "https://github.com/anysite/anysite-cli"
-Issues = "https://github.com/anysite/anysite-cli/issues"
+Repository = "https://github.com/anysiteio/anysite-cli"
+Issues = "https://github.com/anysiteio/anysite-cli/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/anysite"]

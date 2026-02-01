@@ -1,0 +1,102 @@
+name: partners-deep
+description: "5-level LinkedIn intelligence: companies → employees → profiles → posts → comments"
+
+sources:
+  # Level 1: Company details from CSV linkedin_alias column
+  - id: companies
+    endpoint: /api/linkedin/company
+    from_file: ../enriched_partners_sample_10.csv
+    file_field: linkedin_alias
+    input_key: company
+    parallel: 3
+    on_error: skip
+    db_load:
+      fields:
+        - name
+        - url
+        - website
+        - employee_count
+
+  # Level 2: Up to 5 employees per company
+  - id: employees
+    endpoint: /api/linkedin/company/employees
+    dependency:
+      from_source: companies
+      field: urn.value
+    input_key: companies
+    input_template:
+      companies:
+        - type: company
+          value: "{value}"
+      count: 5
+    parallel: 3
+    on_error: skip
+
+  # Level 3: Full profile for each employee
+  - id: profiles
+    endpoint: /api/linkedin/user
+    dependency:
+      from_source: employees
+      field: url
+      dedupe: true
+    input_key: user
+    params:
+      with_experience: true
+      with_education: true
+    parallel: 3
+    on_error: skip
+    db_load:
+      fields:
+        - name
+        - url
+        - urn.value AS urn_id
+        - headline
+        - experience
+        - education
+        - description
+
+  # Level 4: Up to 5 posts per profile
+  - id: posts
+    endpoint: /api/linkedin/user/posts
+    dependency:
+      from_source: profiles
+      field: urn.value
+      dedupe: true
+    input_key: urn
+    input_template:
+      urn: "urn:li:fsd_profile:{value}"
+      count: 5
+    parallel: 3
+    on_error: skip
+    db_load:
+      fields:
+        - url
+        - text
+        - reaction_count
+        - comment_count
+
+  # Level 5: Up to 10 comments per post
+  - id: comments
+    endpoint: /api/linkedin/post/comments
+    dependency:
+      from_source: posts
+      field: urn.value
+      dedupe: true
+    input_key: urn
+    input_template:
+      urn: "urn:li:activity:{value}"
+      count: 10
+    parallel: 3
+    on_error: skip
+    db_load:
+      fields:
+        - author.name AS author_name
+        - reaction_count
+        - text
+
+storage:
+  format: parquet
+  path: ./data/
+  partition_by:
+    - source_id
+    - collected_date

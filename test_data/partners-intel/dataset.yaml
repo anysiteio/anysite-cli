@@ -1,0 +1,70 @@
+name: partners-intel
+description: Partner company profiles and recent posts from LinkedIn
+
+sources:
+  - id: company_profiles
+    endpoint: /api/linkedin/company
+    from_file: ../enriched_partners_sample_10.csv
+    file_field: linkedin_url
+    input_key: company
+    parallel: 3
+    rate_limit: "5/s"
+    on_error: skip
+
+  - id: company_posts
+    endpoint: /api/linkedin/company/posts
+    dependency:
+      from_source: company_profiles
+      field: urn.value
+      dedupe: true
+    input_key: urn
+    input_template:
+      type: company
+      value: "{value}"
+    params:
+      count: 5
+    parallel: 3
+    rate_limit: "5/s"
+    on_error: skip
+
+  - id: post_comments
+    endpoint: /api/linkedin/post/comments
+    dependency:
+      from_source: company_posts
+      field: urn
+      dedupe: true
+    input_key: urn
+    params:
+      count: 10
+    parallel: 3
+    rate_limit: "5/s"
+    on_error: skip
+
+  - id: reddit_mentions
+    endpoint: /api/reddit/search/posts
+    dependency:
+      from_source: company_profiles
+      field: name
+      dedupe: true
+    input_key: query
+    params:
+      count: 10
+      sort: relevance
+    parallel: 3
+    rate_limit: "5/s"
+    on_error: skip
+
+  - id: reddit_comments
+    endpoint: /api/reddit/posts/comments
+    dependency:
+      from_source: reddit_mentions
+      field: url
+      dedupe: true
+    input_key: post_url
+    parallel: 3
+    rate_limit: "5/s"
+    on_error: skip
+
+storage:
+  format: parquet
+  path: ./data/
