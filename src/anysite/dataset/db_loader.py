@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,14 @@ from anysite.db.schema.inference import infer_table_schema
 from anysite.db.utils.sanitize import sanitize_identifier
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LoadResult:
+    """Result of loading a single source into the database."""
+
+    ops: int  # number of SQL operations performed
+    row_count: int  # actual rows in table after load
 
 
 def _get_dialect(adapter: DatabaseAdapter) -> str:
@@ -86,6 +95,21 @@ def _filter_record(
                 row[col_name] = _extract_dot_value(record, field_spec)
             else:
                 row[col_name] = record.get(field_spec)
+
+        # Auto-include key field if configured but not already in fields
+        if db_load.key:
+            existing_sources = set()
+            for fs in db_load.fields:
+                upper_fs = fs.upper()
+                idx = upper_fs.find(" AS ")
+                existing_sources.add(fs[:idx].strip() if idx != -1 else fs.strip())
+            if db_load.key not in existing_sources:
+                key_col = db_load.key.replace(".", "_")
+                if "." in db_load.key:
+                    row[key_col] = _extract_dot_value(record, db_load.key)
+                else:
+                    row[key_col] = record.get(db_load.key)
+
         return row
     else:
         # All fields minus exclusions
@@ -138,7 +162,7 @@ class DatasetDbLoader:
         drop_existing: bool = False,
         dry_run: bool = False,
         snapshot: str | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, LoadResult]:
         """Load all sources into the database in dependency order.
 
         Args:
@@ -148,7 +172,7 @@ class DatasetDbLoader:
             snapshot: Load a specific snapshot date (YYYY-MM-DD).
 
         Returns:
-            Mapping of source_id to number of rows loaded/affected.
+            Mapping of source_id to LoadResult with ops count and row count.
         """
         sources = self.config.topological_sort()
 
@@ -156,16 +180,16 @@ class DatasetDbLoader:
             from anysite.dataset.collector import _filter_sources
             sources = _filter_sources(sources, source_filter, self.config)
 
-        results: dict[str, int] = {}
+        results: dict[str, LoadResult] = {}
 
         for source in sources:
-            count = self._load_source(
+            result = self._load_source(
                 source,
                 drop_existing=drop_existing,
                 dry_run=dry_run,
                 snapshot=snapshot,
             )
-            results[source.id] = count
+            results[source.id] = result
 
         return results
 
@@ -176,7 +200,7 @@ class DatasetDbLoader:
         drop_existing: bool = False,
         dry_run: bool = False,
         snapshot: str | None = None,
-    ) -> int:
+    ) -> LoadResult:
         """Load a single source into the database.
 
         Strategy:
@@ -197,7 +221,7 @@ class DatasetDbLoader:
             snapshot_date = date.fromisoformat(snapshot)
             parquet_path = _get_snapshot_for_date(self.base_path, source.id, snapshot_date)
             if parquet_path is None:
-                return 0
+                return LoadResult(ops=0, row_count=0)
             return self._full_insert(source, table_name, parquet_path, dry_run=dry_run)
 
         # Check if we can do diff-based sync
@@ -217,7 +241,7 @@ class DatasetDbLoader:
         # Fallback: full INSERT of latest snapshot
         latest = _get_latest_parquet(self.base_path, source.id)
         if latest is None:
-            return 0
+            return LoadResult(ops=0, row_count=0)
         return self._full_insert(source, table_name, latest, dry_run=dry_run)
 
     def _full_insert(
@@ -227,11 +251,11 @@ class DatasetDbLoader:
         parquet_path: Path,
         *,
         dry_run: bool = False,
-    ) -> int:
+    ) -> LoadResult:
         """Full INSERT: read parquet, transform, create table if needed, insert all rows."""
         raw_records = read_parquet(parquet_path)
         if not raw_records:
-            return 0
+            return LoadResult(ops=0, row_count=0)
 
         # Determine parent info for FK linking
         parent_source_id = None
@@ -256,7 +280,7 @@ class DatasetDbLoader:
             rows.append(row)
 
         if dry_run:
-            return len(rows)
+            return LoadResult(ops=len(rows), row_count=len(rows))
 
         # Determine the lookup field for children to reference this source
         lookup_field = self._get_child_lookup_field(source)
@@ -286,7 +310,8 @@ class DatasetDbLoader:
         if value_map:
             self._value_to_id[source.id] = value_map
 
-        return len(rows)
+        row_count = self._get_row_count(table_name)
+        return LoadResult(ops=len(rows), row_count=row_count)
 
     def _diff_sync(
         self,
@@ -297,7 +322,7 @@ class DatasetDbLoader:
         dates: list[date],
         *,
         dry_run: bool = False,
-    ) -> int:
+    ) -> LoadResult:
         """Diff-based incremental sync: compare two most recent snapshots, apply delta."""
         result = differ.diff(source.id, diff_key)
         total = 0
@@ -307,7 +332,7 @@ class DatasetDbLoader:
             count = len(result.added) + len(result.changed)
             if sync_mode == "full":
                 count += len(result.removed)
-            return count
+            return LoadResult(ops=count, row_count=count)
 
         # Extract key value from a record (handles dot-notation)
         def _get_key_val(record: dict[str, Any]) -> Any:
@@ -387,7 +412,8 @@ class DatasetDbLoader:
                 self.adapter.execute(sql, tuple(params))
                 total += 1
 
-        return total
+        row_count = self._get_row_count(table_name)
+        return LoadResult(ops=total, row_count=row_count)
 
     def _get_child_lookup_field(self, source: DatasetSource) -> str | None:
         """Find which field children use to reference this source."""
@@ -418,6 +444,11 @@ class DatasetDbLoader:
 
             col_name = alias or source_field.replace(".", "_")
             mapping[source_field] = col_name
+
+        # Auto-include key if not in explicit fields
+        if db_load.key and db_load.key not in mapping:
+            mapping[db_load.key] = db_load.key.replace(".", "_")
+
         return mapping
 
     def _placeholder(self) -> str:
@@ -431,6 +462,13 @@ class DatasetDbLoader:
         if self._dialect == "postgres":
             return "SERIAL"
         return "INTEGER"
+
+    def _get_row_count(self, table_name: str) -> int:
+        """Get the current row count in a table."""
+        row = self.adapter.fetch_one(
+            f"SELECT COUNT(*) as c FROM {table_name}"
+        )
+        return row["c"] if row else 0
 
     def _get_last_id(self, table_name: str) -> int | None:
         """Get the last inserted auto-increment ID."""

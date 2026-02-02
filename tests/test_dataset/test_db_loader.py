@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from anysite.dataset.db_loader import DatasetDbLoader, _extract_dot_value, _filter_record
+from anysite.dataset.db_loader import DatasetDbLoader, LoadResult, _extract_dot_value, _filter_record
 from anysite.dataset.models import (
     DatasetConfig,
     DatasetSource,
@@ -96,7 +96,7 @@ class TestLoadSingleSource:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
 
-            assert results["profiles"] == 2
+            assert results["profiles"].row_count == 2
             assert adapter.table_exists("profiles")
 
             rows = adapter.fetch_all("SELECT * FROM profiles ORDER BY id")
@@ -170,8 +170,8 @@ class TestForeignKeyLinking:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
 
-            assert results["companies"] == 2
-            assert results["employees"] == 3
+            assert results["companies"].row_count == 2
+            assert results["employees"].row_count == 3
 
             # Verify FK values
             employees = adapter.fetch_all(
@@ -308,7 +308,7 @@ class TestDryRun:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all(dry_run=True)
 
-            assert results["items"] == 1
+            assert results["items"].ops == 1
             assert not adapter.table_exists("items")
 
 
@@ -342,7 +342,7 @@ class TestEmptySource:
         with adapter:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
-            assert results["empty"] == 0
+            assert results["empty"].row_count == 0
 
 
 class TestDiffBasedSync:
@@ -378,7 +378,7 @@ class TestDiffBasedSync:
             # First load: full insert of latest (table doesn't exist yet)
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
-            assert results["items"] == 2
+            assert results["items"].row_count == 2
 
             # Simulate: drop and reload just the old snapshot to set up DB state
             adapter.execute("DROP TABLE items")
@@ -394,7 +394,7 @@ class TestDiffBasedSync:
             # Now diff-based sync should INSERT Bob
             loader3 = DatasetDbLoader(config, adapter)
             results = loader3.load_all()
-            assert results["items"] == 1  # 1 added
+            assert results["items"].ops == 1  # 1 added
 
             rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
             assert len(rows) == 2
@@ -433,7 +433,7 @@ class TestDiffBasedSync:
             # Diff-based sync should DELETE Bob
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["items"] == 1  # 1 removed
+            assert results["items"].ops == 1  # 1 removed
 
             rows = adapter.fetch_all("SELECT * FROM items")
             assert len(rows) == 1
@@ -469,7 +469,7 @@ class TestDiffBasedSync:
             # Diff-based sync should UPDATE score
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["items"] == 1  # 1 changed
+            assert results["items"].ops == 1  # 1 changed
 
             rows = adapter.fetch_all("SELECT * FROM items")
             assert len(rows) == 1
@@ -510,7 +510,7 @@ class TestDiffBasedSync:
             # Diff-based sync
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["items"] == 3  # 1 added + 1 removed + 1 changed
+            assert results["items"].ops == 3  # 1 added + 1 removed + 1 changed
 
             rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
             assert len(rows) == 2
@@ -542,12 +542,12 @@ class TestDiffBasedSync:
             # First load creates table with latest snapshot
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
-            assert results["items"] == 2
+            assert results["items"].row_count == 2
 
             # Second load without key: full insert again (no diff)
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["items"] == 2
+            assert results["items"].ops == 2
             # Without drop_existing, rows accumulate
             rows = adapter.fetch_all("SELECT * FROM items")
             assert len(rows) == 4
@@ -577,7 +577,7 @@ class TestSnapshotLoading:
             # Load the older snapshot specifically
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all(snapshot="2026-01-01")
-            assert results["items"] == 1
+            assert results["items"].row_count == 1
 
             rows = adapter.fetch_all("SELECT * FROM items")
             assert len(rows) == 1
@@ -595,7 +595,7 @@ class TestSnapshotLoading:
         with adapter:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all(snapshot="2026-12-31")
-            assert results["items"] == 0
+            assert results["items"].row_count == 0
 
 
 class TestDropExistingWithDiffKey:
@@ -629,7 +629,7 @@ class TestDropExistingWithDiffKey:
             # Drop and reload — should full insert latest, not diff
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all(drop_existing=True)
-            assert results["items"] == 2
+            assert results["items"].row_count == 2
 
             rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
             assert len(rows) == 2
@@ -683,7 +683,7 @@ class TestAppendSyncMode:
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
             # 1 added + 1 changed = 2 (no deletes)
-            assert results["posts"] == 2
+            assert results["posts"].ops == 2
 
             rows = adapter.fetch_all("SELECT * FROM posts ORDER BY uid")
             assert len(rows) == 4  # 3 original + 1 added, none deleted
@@ -730,7 +730,7 @@ class TestAppendSyncMode:
 
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["posts"] == 2  # 1 changed + 1 removed
+            assert results["posts"].ops == 2  # 1 changed + 1 removed
 
             rows = adapter.fetch_all("SELECT * FROM posts")
             assert len(rows) == 1
@@ -877,7 +877,7 @@ class TestUpdateFieldFiltering:
             # Diff sync — extra changed but should be skipped
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
-            assert results["items"] == 1  # score changed
+            assert results["items"].ops == 1  # score changed
 
             rows = adapter.fetch_all("SELECT * FROM items")
             assert rows[0]["score"] == 95
@@ -953,8 +953,140 @@ class TestUpdateFieldFiltering:
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
             # extra is not in db_load.fields, so no actual update
-            assert results["items"] == 0
+            assert results["items"].ops == 0
 
             rows = adapter.fetch_all("SELECT * FROM items")
             assert len(rows) == 1
+            assert rows[0]["score"] == 90
+
+
+class TestAutoIncludeKey:
+    """Test that db_load.key is auto-included in db_load.fields when not explicitly listed."""
+
+    def _setup_two_snapshots(self, tmp_path, source_id, old_records, new_records):
+        source_dir = get_source_dir(tmp_path / "data", source_id)
+        write_parquet(old_records, source_dir / "2026-01-01.parquet")
+        write_parquet(new_records, source_dir / "2026-01-02.parquet")
+
+    def test_key_auto_included_in_fields(self, tmp_path):
+        """db_load.fields = [url, text], key = name → name column auto-created."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name", fields=["url", "text"]),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "url": "http://a", "text": "hello"}],
+            new_records=[
+                {"name": "Alice", "url": "http://a", "text": "updated"},
+                {"name": "Bob", "url": "http://b", "text": "new"},
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # First load — full insert of old snapshot to set up DB
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            # Verify name column was auto-created
+            schema = adapter.get_table_schema("items")
+            col_names = [c["name"] for c in schema]
+            assert "name" in col_names
+            assert "url" in col_names
+            assert "text" in col_names
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["name"] == "Alice"
+
+            # Diff sync should work — key column exists
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"].ops == 2  # 1 added + 1 changed
+
+            rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
+            assert len(rows) == 2
+            assert rows[0]["name"] == "Alice"
+            assert rows[0]["text"] == "updated"
+            assert rows[1]["name"] == "Bob"
+
+    def test_dot_key_auto_included(self, tmp_path):
+        """db_load.fields = [text], key = meta.id → meta_id column auto-created."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="meta.id", fields=["text"]),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[
+                {"meta": json.dumps({"id": "x1"}), "text": "hello"},
+            ],
+            new_records=[
+                {"meta": json.dumps({"id": "x1"}), "text": "updated"},
+                {"meta": json.dumps({"id": "x2"}), "text": "new"},
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            # Verify meta_id column was auto-created
+            schema = adapter.get_table_schema("items")
+            col_names = [c["name"] for c in schema]
+            assert "meta_id" in col_names
+            assert "text" in col_names
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["meta_id"] == "x1"
+
+            # Diff sync should work
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"].ops == 2  # 1 added + 1 changed
+
+            rows = adapter.fetch_all("SELECT * FROM items ORDER BY meta_id")
+            assert len(rows) == 2
+            assert rows[0]["meta_id"] == "x1"
+            assert rows[0]["text"] == "updated"
+            assert rows[1]["meta_id"] == "x2"
+
+    def test_key_already_in_fields_not_duplicated(self, tmp_path):
+        """If key is already in fields, it should not be added twice."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name", fields=["name", "score"]),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [{"name": "Alice", "score": 90}],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            loader.load_all()
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["name"] == "Alice"
             assert rows[0]["score"] == 90

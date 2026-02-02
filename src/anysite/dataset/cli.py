@@ -398,24 +398,37 @@ def load_db(
         table.add_column("Source", style="bold")
         table.add_column("Table")
         table.add_column("Rows", justify="right")
+        table.add_column("Synced", justify="right")
 
         from anysite.dataset.db_loader import _table_name_for
 
+        total_rows = 0
+        total_ops = 0
         for src in config.sources:
             if src.id in results:
+                lr = results[src.id]
+                total_rows += lr.row_count
+                total_ops += lr.ops
+                synced = str(lr.ops) if lr.ops != lr.row_count else ""
                 table.add_row(
                     src.id,
                     _table_name_for(src),
-                    str(results[src.id]),
+                    str(lr.row_count),
+                    synced,
                 )
 
         console.print(table)
 
-        total = sum(results.values())
-        console.print(
-            f"\n[bold green]{'Would load' if dry_run else 'Loaded'}[/bold green] "
-            f"{total} rows across {len(results)} tables."
-        )
+        if total_ops != total_rows and not dry_run:
+            console.print(
+                f"\n[bold green]Loaded[/bold green] "
+                f"{total_rows} rows across {len(results)} tables ({total_ops} operations)."
+            )
+        else:
+            console.print(
+                f"\n[bold green]{'Would load' if dry_run else 'Loaded'}[/bold green] "
+                f"{total_rows} rows across {len(results)} tables."
+            )
 
 
 @app.command("diff")
@@ -734,14 +747,25 @@ def _run_load_db(
         table.add_column("Source", style="bold")
         table.add_column("Table")
         table.add_column("Rows", justify="right")
+        table.add_column("Synced", justify="right")
 
+        total_rows = 0
+        total_ops = 0
         for src in config.sources:
             if src.id in results:
-                table.add_row(src.id, _table_name_for(src), str(results[src.id]))
+                lr = results[src.id]
+                total_rows += lr.row_count
+                total_ops += lr.ops
+                synced = str(lr.ops) if lr.ops != lr.row_count else ""
+                table.add_row(src.id, _table_name_for(src), str(lr.row_count), synced)
 
         console.print(table)
-        total = sum(results.values())
-        console.print(f"[bold green]Loaded[/bold green] {total} rows into {connection}.")
+        if total_ops != total_rows:
+            console.print(
+                f"[bold green]Loaded[/bold green] {total_rows} rows into {connection} ({total_ops} operations)."
+            )
+        else:
+            console.print(f"[bold green]Loaded[/bold green] {total_rows} rows into {connection}.")
 
 
 def _output_results(
