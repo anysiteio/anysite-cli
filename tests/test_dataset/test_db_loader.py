@@ -1,7 +1,6 @@
 """Tests for dataset DB loader with SQLite in-memory adapter."""
 
 import json
-
 import pytest
 
 from anysite.dataset.db_loader import DatasetDbLoader, _extract_dot_value, _filter_record
@@ -736,3 +735,101 @@ class TestAppendSyncMode:
             rows = adapter.fetch_all("SELECT * FROM posts")
             assert len(rows) == 1
             assert rows[0]["uid"] == "a"
+
+
+class TestPostgresPlaceholders:
+    """Test that diff-based sync uses %s placeholders for postgres dialect."""
+
+    def _setup_two_snapshots(self, tmp_path, source_id, old_records, new_records):
+        source_dir = get_source_dir(tmp_path / "data", source_id)
+        write_parquet(old_records, source_dir / "2026-01-01.parquet")
+        write_parquet(new_records, source_dir / "2026-01-02.parquet")
+
+    def test_delete_uses_percent_s(self, tmp_path):
+        """DELETE query uses %s placeholder for postgres."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name", sync="full"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[
+                {"name": "Alice", "score": 90},
+                {"name": "Bob", "score": 80},
+            ],
+            new_records=[{"name": "Alice", "score": 90}],
+        )
+
+        # Use real SQLite adapter for initial load, then mock for diff sync
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            # Patch dialect to postgres and spy on execute
+            loader2 = DatasetDbLoader(config, adapter)
+            loader2._dialect = "postgres"
+            original_execute = adapter.execute
+            calls = []
+
+            def spy_execute(sql, params=None):
+                calls.append((sql, params))
+                # Replace %s with ? for SQLite execution
+                original_execute(sql.replace("%s", "?"), params)
+
+            adapter.execute = spy_execute
+            loader2.load_all()
+
+            # Verify DELETE used %s
+            delete_calls = [c for c in calls if "DELETE" in c[0]]
+            assert len(delete_calls) == 1
+            assert "%s" in delete_calls[0][0]
+            assert "?" not in delete_calls[0][0]
+
+    def test_update_uses_percent_s(self, tmp_path):
+        """UPDATE query uses %s placeholders for postgres."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90}],
+            new_records=[{"name": "Alice", "score": 95}],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            loader2 = DatasetDbLoader(config, adapter)
+            loader2._dialect = "postgres"
+            original_execute = adapter.execute
+            calls = []
+
+            def spy_execute(sql, params=None):
+                calls.append((sql, params))
+                original_execute(sql.replace("%s", "?"), params)
+
+            adapter.execute = spy_execute
+            loader2.load_all()
+
+            update_calls = [c for c in calls if "UPDATE" in c[0]]
+            assert len(update_calls) == 1
+            assert "%s" in update_calls[0][0]
+            assert "?" not in update_calls[0][0]

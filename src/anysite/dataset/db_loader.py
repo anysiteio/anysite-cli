@@ -326,13 +326,14 @@ class DatasetDbLoader:
                 total += 1
 
         # DELETE removed records (skipped in append mode)
+        ph = self._placeholder()
         if result.removed and sync_mode == "full":
             safe_col = sanitize_identifier(db_key_col)
             for record in result.removed:
                 key_val = _get_key_val(record)
                 if key_val is not None:
                     self.adapter.execute(
-                        f"DELETE FROM {table_name} WHERE {safe_col} = ?",
+                        f"DELETE FROM {table_name} WHERE {safe_col} = {ph}",
                         (str(key_val),),
                     )
                     total += 1
@@ -354,14 +355,14 @@ class DatasetDbLoader:
                 for field_name in changed_fields:
                     new_val = record.get(field_name)
                     safe_field = sanitize_identifier(field_name)
-                    set_parts.append(f"{safe_field} = ?")
+                    set_parts.append(f"{safe_field} = {ph}")
                     params.append(new_val)
 
                 params.append(str(key_val))
                 sql = (
                     f"UPDATE {table_name} "
                     f"SET {', '.join(set_parts)} "
-                    f"WHERE {safe_col} = ?"
+                    f"WHERE {safe_col} = {ph}"
                 )
                 self.adapter.execute(sql, tuple(params))
                 total += 1
@@ -374,6 +375,12 @@ class DatasetDbLoader:
             if other.dependency and other.dependency.from_source == source.id:
                 return other.dependency.field
         return None
+
+    def _placeholder(self) -> str:
+        """Get the parameter placeholder for the dialect."""
+        if self._dialect == "postgres":
+            return "%s"
+        return "?"
 
     def _auto_id_type(self) -> str:
         """Get the auto-increment ID column type for the dialect."""
