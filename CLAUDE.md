@@ -53,6 +53,8 @@ anysite dataset history my-dataset
 anysite dataset logs my-dataset --run 42
 anysite dataset schedule dataset.yaml --incremental --load-db pg
 anysite dataset schedule dataset.yaml --systemd --load-db pg
+anysite dataset diff dataset.yaml --source profiles --key _input_value
+anysite dataset diff dataset.yaml --source profiles --key urn --from 2026-01-30 --to 2026-02-01
 anysite dataset reset-cursor dataset.yaml
 anysite dataset reset-cursor dataset.yaml --source profiles
 
@@ -102,7 +104,8 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 - `dataset/history.py` - `HistoryStore` (SQLite at `~/.anysite/dataset_history.db`): run start/finish tracking. `LogManager`: file-based per-run logs at `~/.anysite/logs/`
 - `dataset/scheduler.py` - `ScheduleGenerator`: crontab and systemd timer unit generation from cron expressions
 - `dataset/notifications.py` - `WebhookNotifier`: POST to webhook URLs on collection complete/failure
-- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `history`, `logs`, `schedule`, `reset-cursor`
+- `dataset/differ.py` - `DatasetDiffer`: compare two Parquet snapshots using DuckDB (added/removed/changed records). `DiffResult` dataclass, `format_diff_table()` and `format_diff_records()` formatters
+- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`
 - `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference
 - `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`
 - `db/__init__.py` - `check_db_deps()` — verifies optional psycopg is installed for Postgres
@@ -202,5 +205,5 @@ Tests are in `tests/` with subdirectories mirroring `src/anysite/`:
 - `test_streaming/` — Progress and writer
 - `test_output/` — Formatters and templates
 - `test_utils/` — Field selection and retry
-- `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications
+- `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications, differ
 - `test_db/` — Database adapters, schema inference, connection manager, operations

@@ -413,6 +413,117 @@ def load_db(
         )
 
 
+@app.command("diff")
+def diff_cmd(
+    config_path: Annotated[
+        Path,
+        typer.Argument(help="Path to dataset.yaml"),
+    ],
+    source: Annotated[
+        str,
+        typer.Option("--source", "-s", help="Source to compare"),
+    ],
+    key: Annotated[
+        str,
+        typer.Option("--key", "-k", help="Field to match records by (e.g., _input_value, urn)"),
+    ],
+    from_date: Annotated[
+        str | None,
+        typer.Option("--from", help="Older snapshot date (YYYY-MM-DD)"),
+    ] = None,
+    to_date: Annotated[
+        str | None,
+        typer.Option("--to", help="Newer snapshot date (YYYY-MM-DD)"),
+    ] = None,
+    fields: Annotated[
+        str | None,
+        typer.Option("--fields", "-f", help="Only compare these fields (comma-separated)"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: table, json, jsonl, csv"),
+    ] = "table",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write output to file"),
+    ] = None,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Suppress summary, only output data"),
+    ] = False,
+) -> None:
+    """Compare two snapshots of a source to show added, removed, and changed records."""
+    from datetime import date as date_type
+
+    from anysite.dataset.differ import (
+        DatasetDiffer,
+        format_diff_records,
+        format_diff_table,
+    )
+
+    config = _load_config(config_path)
+
+    # Validate source exists
+    src = config.get_source(source)
+    if src is None:
+        typer.echo(f"Error: source '{source}' not found in dataset", err=True)
+        raise typer.Exit(1)
+
+    differ = DatasetDiffer(config.storage_path())
+
+    # Parse dates
+    parsed_from = None
+    parsed_to = None
+    try:
+        if from_date:
+            parsed_from = date_type.fromisoformat(from_date)
+        if to_date:
+            parsed_to = date_type.fromisoformat(to_date)
+    except ValueError as e:
+        typer.echo(f"Error: invalid date format: {e}", err=True)
+        raise typer.Exit(1) from None
+
+    # Parse fields
+    field_list = None
+    if fields:
+        field_list = [f.strip() for f in fields.split(",") if f.strip()]
+
+    try:
+        result = differ.diff(
+            source,
+            key,
+            from_date=parsed_from,
+            to_date=parsed_to,
+            fields=field_list,
+        )
+    except DatasetError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from None
+
+    # Print summary unless quiet
+    if not quiet:
+        console = Console()
+        console.print(
+            f"\n[bold]Diff: {source}[/bold] "
+            f"({result.from_date.isoformat()} → {result.to_date.isoformat()})\n"
+        )
+        console.print(f"  [green]Added:[/green]     {len(result.added)}")
+        console.print(f"  [red]Removed:[/red]   {len(result.removed)}")
+        console.print(f"  [yellow]Changed:[/yellow]   {len(result.changed)}")
+        console.print(f"  Unchanged: {result.unchanged_count}")
+        console.print()
+
+    if not result.has_changes:
+        if not quiet:
+            Console().print("[dim]No changes detected.[/dim]")
+        return
+
+    # Format and output
+    rows = format_diff_table(result) if format == "table" else format_diff_records(result)
+
+    _output_results(rows, format, output)
+
+
 @app.command("history")
 def history(
     name: Annotated[

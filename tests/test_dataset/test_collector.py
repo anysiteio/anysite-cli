@@ -405,6 +405,197 @@ class TestCollectDataset:
         assert results["profiles"] == 1  # From metadata, not re-collected
 
 
+class TestRefreshAlways:
+    @pytest.mark.asyncio
+    async def test_refresh_always_not_skipped_incremental(self, tmp_path):
+        """Source with refresh: always is NOT skipped when incremental=True and data exists."""
+        from anysite.dataset.storage import MetadataStore, get_parquet_path
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(
+                    id="posts",
+                    endpoint="/api/posts",
+                    refresh="always",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        # Pre-write data for today
+        today = date.today()
+        parquet_path = get_parquet_path(tmp_path / "data", "posts", today)
+        write_parquet([{"id": 1}], parquet_path)
+        metadata = MetadataStore(tmp_path / "data")
+        metadata.update_source("posts", 1, today)
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = [{"id": 2, "text": "new"}]
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, incremental=True, quiet=True)
+
+        # Should have re-collected (not returned old count of 1)
+        assert results["posts"] == 1
+        # Verify the API was called
+        mock_client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_auto_skipped_incremental(self, tmp_path):
+        """Source with refresh: auto (default) IS skipped when incremental=True."""
+        from anysite.dataset.storage import MetadataStore, get_parquet_path
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="profiles", endpoint="/api/profiles"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        today = date.today()
+        parquet_path = get_parquet_path(tmp_path / "data", "profiles", today)
+        write_parquet([{"id": 1}], parquet_path)
+        metadata = MetadataStore(tmp_path / "data")
+        metadata.update_source("profiles", 1, today)
+
+        results = await collect_dataset(config, incremental=True, quiet=True)
+        assert results["profiles"] == 1  # From metadata, not re-collected
+
+    @pytest.mark.asyncio
+    async def test_refresh_always_no_effect_without_incremental(self, tmp_path):
+        """Without --incremental, refresh field has no effect."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(
+                    id="posts",
+                    endpoint="/api/posts",
+                    refresh="always",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = [{"id": 1}]
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, incremental=False, quiet=True)
+
+        assert results["posts"] == 1
+        mock_client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_always_dependent_ignores_collected_inputs(self, tmp_path):
+        """Dependent source with refresh: always ignores collected_inputs tracking."""
+        from anysite.dataset.storage import MetadataStore, get_parquet_path
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="parent", endpoint="/api/parent"),
+                DatasetSource(
+                    id="child",
+                    endpoint="/api/child",
+                    dependency=SourceDependency(from_source="parent", field="urn"),
+                    input_key="parent_urn",
+                    refresh="always",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        today = date.today()
+        parquet_path = get_parquet_path(tmp_path / "data", "parent", today)
+        write_parquet(
+            [{"urn": "u1"}, {"urn": "u2"}, {"urn": "u3"}],
+            parquet_path,
+        )
+        metadata = MetadataStore(tmp_path / "data")
+        metadata.update_source("parent", 3)
+        # Mark u1 and u2 as already collected
+        metadata.update_collected_inputs("child", ["u1", "u2"])
+
+        call_count = 0
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+
+            async def mock_post(endpoint, data=None):
+                nonlocal call_count
+                call_count += 1
+                return {"id": call_count}
+
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(
+                config, incremental=True, quiet=True
+            )
+
+        # All 3 should be collected (refresh: always ignores collected_inputs)
+        assert results["child"] == 3
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_refresh_always_from_file_ignores_collected_inputs(self, tmp_path):
+        """from_file source with refresh: always ignores collected_inputs tracking."""
+        from anysite.dataset.storage import MetadataStore
+
+        input_file = tmp_path / "inputs.txt"
+        input_file.write_text("alpha\nbeta\ngamma\n")
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(
+                    id="items",
+                    endpoint="/api/items",
+                    from_file=str(input_file),
+                    input_key="name",
+                    refresh="always",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        metadata = MetadataStore(tmp_path / "data")
+        metadata.update_collected_inputs("items", ["alpha", "beta"])
+
+        call_count = 0
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+
+            async def mock_post(endpoint, data=None):
+                nonlocal call_count
+                call_count += 1
+                return {"id": call_count}
+
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(
+                config, config_dir=tmp_path, incremental=True, quiet=True
+            )
+
+        # All 3 should be collected despite alpha/beta being in collected_inputs
+        assert results["items"] == 3
+        assert call_count == 3
+
+
 class TestIncrementalDedup:
     @pytest.mark.asyncio
     async def test_incremental_skips_collected_inputs(self, tmp_path):

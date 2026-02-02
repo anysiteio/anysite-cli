@@ -129,6 +129,10 @@ class DatasetSource(BaseModel):
         default_factory=list,
         description="Export destinations (file/webhook) applied after Parquet write",
     )
+    refresh: Literal["auto", "always"] = Field(
+        default="auto",
+        description="Refresh mode: 'auto' uses incremental caching, 'always' re-collects every run",
+    )
 
     @field_validator("endpoint")
     @classmethod

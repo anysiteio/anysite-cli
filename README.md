@@ -209,6 +209,7 @@ sources:
         - type: company
           value: "{value}"
       count: 5
+    refresh: always                       # Re-collect every run with --incremental
     db_load:
       fields: [name, url, headline]
 
@@ -263,6 +264,9 @@ anysite dataset logs my-dataset --run 42
 
 # Generate cron/systemd schedule
 anysite dataset schedule dataset.yaml --incremental --load-db pg
+
+# Compare snapshots (diff two collection dates)
+anysite dataset diff dataset.yaml --source employees --key _input_value
 
 # Reset incremental state
 anysite dataset reset-cursor dataset.yaml

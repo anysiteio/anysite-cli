@@ -43,6 +43,7 @@ class CollectionPlan:
         params: dict[str, Any] | None = None,
         dependency: str | None = None,
         estimated_requests: int | None = None,
+        refresh: str = "auto",
     ) -> None:
         self.steps.append({
             "source": source_id,
@@ -51,6 +52,7 @@ class CollectionPlan:
             "params": params or {},
             "dependency": dependency,
             "estimated_requests": estimated_requests,
+            "refresh": refresh,
         })
 
 
@@ -116,8 +118,8 @@ async def collect_dataset(
 
     try:
         for source in ordered:
-            # Check incremental skip
-            if incremental:
+            # Check incremental skip (refresh: always bypasses this)
+            if incremental and source.refresh != "always":
                 parquet_path = get_parquet_path(base_path, source.id, today)
                 if parquet_path.exists():
                     if not quiet:
@@ -276,8 +278,8 @@ async def _collect_from_file(
             print_warning(f"No values extracted from {file_path}")
         return []
 
-    # Filter already-collected inputs in incremental mode
-    if incremental and metadata:
+    # Filter already-collected inputs in incremental mode (refresh: always bypasses)
+    if incremental and source.refresh != "always" and metadata:
         already = metadata.get_collected_inputs(source.id)
         if already:
             original = len(values)
@@ -432,8 +434,8 @@ async def _collect_dependent(
             f"Source {source.id} has a dependency but no input_key defined"
         )
 
-    # Filter already-collected inputs in incremental mode
-    if incremental and metadata:
+    # Filter already-collected inputs in incremental mode (refresh: always bypasses)
+    if incremental and source.refresh != "always" and metadata:
         already = metadata.get_collected_inputs(source.id)
         if already:
             original = len(values)
@@ -579,7 +581,7 @@ def _build_plan(
     plan = CollectionPlan()
 
     for source in ordered:
-        if incremental:
+        if incremental and source.refresh != "always":
             parquet_path = get_parquet_path(base_path, source.id, today)
             if parquet_path.exists():
                 continue
@@ -592,6 +594,7 @@ def _build_plan(
                 kind="from_file",
                 params={"file": source.from_file, "field": source.file_field},
                 estimated_requests=est,
+                refresh=source.refresh,
             )
         elif source.dependency is None:
             plan.add_step(
@@ -600,6 +603,7 @@ def _build_plan(
                 kind="independent",
                 params=source.params,
                 estimated_requests=1,
+                refresh=source.refresh,
             )
         else:
             est = _count_dependent_inputs(source, base_path, metadata)
@@ -609,6 +613,7 @@ def _build_plan(
                 kind="dependent",
                 dependency=source.dependency.from_source,
                 estimated_requests=est,
+                refresh=source.refresh,
             )
 
     return plan
@@ -665,11 +670,14 @@ def _print_plan(plan: CollectionPlan) -> dict[str, int]:
     table.add_column("Est. Requests")
 
     for i, step in enumerate(plan.steps, 1):
+        kind = step["kind"]
+        if step.get("refresh") == "always":
+            kind += " (refresh)"
         table.add_row(
             str(i),
             step["source"],
             step["endpoint"],
-            step["kind"],
+            kind,
             step.get("dependency") or "-",
             str(step.get("estimated_requests") or "?"),
         )
