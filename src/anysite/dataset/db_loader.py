@@ -239,6 +239,11 @@ class DatasetDbLoader:
                 )
 
         # Fallback: full INSERT of latest snapshot
+        # If table already exists and no key for diff, truncate first to avoid duplicates
+        if table_exists and not diff_key and not dry_run:
+            self.adapter.execute(f"DELETE FROM {table_name}")
+            logger.info("Truncated %s (no db_load.key for incremental sync)", table_name)
+
         latest = _get_latest_parquet(self.base_path, source.id)
         if latest is None:
             return LoadResult(ops=0, row_count=0)

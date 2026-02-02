@@ -544,13 +544,13 @@ class TestDiffBasedSync:
             results = loader.load_all()
             assert results["items"].row_count == 2
 
-            # Second load without key: full insert again (no diff)
+            # Second load without key: truncate + full insert (no duplicates)
             loader2 = DatasetDbLoader(config, adapter)
             results = loader2.load_all()
             assert results["items"].ops == 2
-            # Without drop_existing, rows accumulate
+            # Table is truncated before re-insert, no duplicates
             rows = adapter.fetch_all("SELECT * FROM items")
-            assert len(rows) == 4
+            assert len(rows) == 2
 
 
 class TestSnapshotLoading:
