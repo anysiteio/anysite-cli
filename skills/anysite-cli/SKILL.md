@@ -1,6 +1,6 @@
 ---
 name: anysite-cli
-description: Operate the anysite command-line tool for web data extraction, batch API processing, multi-source dataset pipelines with scheduling/transforms/exports, and database operations. Use when users ask to collect data from LinkedIn, Instagram, Twitter, or any web source via CLI; create or run dataset pipelines; schedule automated collection; batch-process API calls; query collected data with SQL; load data into PostgreSQL or SQLite; or work with anysite commands. Triggers on anysite CLI usage, data collection, dataset creation, scraping, API batch calls, scheduling, or database loading tasks.
+description: Operate the anysite command-line tool for web data extraction, batch API processing, multi-source dataset pipelines with scheduling/transforms/exports, database operations, and LLM-powered data analysis. Use when users ask to collect data from LinkedIn, Instagram, Twitter, or any web source via CLI; create or run dataset pipelines; schedule automated collection; batch-process API calls; query collected data with SQL; load data into PostgreSQL or SQLite; analyze data with LLM (summarize, classify, enrich, match, deduplicate); or work with anysite commands. Triggers on anysite CLI usage, data collection, dataset creation, scraping, API batch calls, scheduling, database loading, or LLM analysis tasks.
 ---
 
 # Anysite CLI
@@ -285,6 +285,71 @@ anysite dataset schedule dataset.yaml --systemd --incremental --load-db pg
 anysite dataset reset-cursor dataset.yaml
 anysite dataset reset-cursor dataset.yaml --source profiles
 ```
+
+## Workflow 5: LLM Analysis
+
+Analyze collected dataset records using LLM providers (OpenAI or Anthropic). Requires `pip install "anysite-cli[llm]"`.
+
+### Setup
+```bash
+anysite llm setup
+# Configures provider, API key env var, default model, tests connection
+```
+
+### Summarize
+```bash
+anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --max-length 50 --format table
+```
+
+### Classify
+```bash
+# With explicit categories
+anysite llm classify dataset.yaml --source posts --categories "positive,negative,neutral" --format table
+
+# Auto-detect categories from data
+anysite llm classify dataset.yaml --source posts --format table
+```
+
+### Enrich
+```bash
+anysite llm enrich dataset.yaml --source profiles \
+  --add "sentiment:positive/negative/neutral" \
+  --add "language:string" \
+  --add "quality_score:1-10"
+```
+
+### Generate
+```bash
+anysite llm generate dataset.yaml --source profiles \
+  --prompt "Write a LinkedIn intro for {name} who works as {headline}" \
+  --temperature 0.7 --output intros.json
+```
+
+### Match (cross-source)
+```bash
+anysite llm match dataset.yaml --source-a profiles --source-b companies \
+  --fields-a "name,headline" --fields-b "name,industry" --top-k 3
+```
+
+### Deduplicate
+```bash
+anysite llm deduplicate dataset.yaml --source profiles --key name --threshold 0.8
+```
+
+### Cache
+```bash
+anysite llm cache-stats
+anysite llm cache-clear
+```
+
+**Common options:** `--provider`, `--model`, `--fields`, `--format`, `--output`, `--parallel`, `--rate-limit`, `--temperature`, `--dry-run`, `--no-cache`, `--prompt`, `--prompt-file`, `--quiet`.
+
+**Key patterns:**
+- All commands read from Parquet snapshots (latest by default)
+- `--fields` controls which record fields are included in the LLM prompt
+- `--dry-run` shows the prompt without calling the LLM
+- Responses are cached in SQLite (`~/.anysite/llm_cache.db`) — use `--no-cache` to bypass
+- Structured output via JSON Schema (OpenAI) or system-prompt (Anthropic)
 
 ## Key Patterns
 

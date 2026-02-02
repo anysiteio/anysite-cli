@@ -312,6 +312,60 @@ anysite db schema pg --table users
 
 Supports SQLite and PostgreSQL. Passwords stored as env var references.
 
+## LLM Analysis
+
+LLM-powered analysis of collected dataset records. Summarize, classify, enrich, generate text, match records across sources, and find semantic duplicates.
+
+```bash
+pip install "anysite-cli[llm]"        # OpenAI + Anthropic SDKs
+```
+
+### Setup
+
+```bash
+anysite llm setup
+```
+
+Configures provider (OpenAI or Anthropic), API key env var, and default model. Tests the connection.
+
+### Commands
+
+```bash
+# Classify records into categories (auto-detects categories if --categories omitted)
+anysite llm classify dataset.yaml --source posts --categories "positive,negative,neutral" --format table
+
+# Summarize each record
+anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --max-length 50
+
+# Enrich records with LLM-extracted attributes
+anysite llm enrich dataset.yaml --source posts \
+  --add "sentiment:positive/negative/neutral" \
+  --add "language:string" \
+  --add "quality_score:1-10"
+
+# Generate text using record fields as template variables
+anysite llm generate dataset.yaml --source profiles \
+  --prompt "Write a LinkedIn intro for {name} who works as {headline}" \
+  --temperature 0.7
+
+# Match records between two sources
+anysite llm match dataset.yaml --source-a profiles --source-b companies --top-k 3
+
+# Find semantic duplicates
+anysite llm deduplicate dataset.yaml --source profiles --key name --threshold 0.8
+```
+
+Common options: `--provider`, `--model`, `--fields`, `--format`, `--output`, `--parallel`, `--rate-limit`, `--temperature`, `--dry-run`, `--no-cache`, `--prompt`, `--prompt-file`.
+
+### Cache
+
+```bash
+anysite llm cache-stats    # Show cache statistics
+anysite llm cache-clear    # Clear all cached responses
+```
+
+Responses are cached in SQLite at `~/.anysite/llm_cache.db`. Use `--no-cache` to skip cache lookup.
+
 ## Configuration
 
 Configuration is stored in `~/.anysite/config.yaml`.

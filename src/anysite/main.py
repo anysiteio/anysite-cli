@@ -492,6 +492,13 @@ try:
 except ImportError:
     pass
 
+# Register llm subcommand (requires optional [llm] dependencies)
+try:
+    from anysite.llm.cli import app as llm_app
+
+    app.add_typer(llm_app, name="llm", help="LLM-powered analysis of collected data")
+except ImportError:
+    pass
 
 
 if __name__ == "__main__":

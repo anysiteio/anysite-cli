@@ -60,6 +60,17 @@ anysite dataset diff dataset.yaml --source profiles --key urn.value --fields "na
 anysite dataset reset-cursor dataset.yaml
 anysite dataset reset-cursor dataset.yaml --source profiles
 
+# LLM commands
+anysite llm setup
+anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --format table
+anysite llm classify dataset.yaml --source posts --categories "positive,negative,neutral" --format table
+anysite llm enrich dataset.yaml --source posts --add "sentiment:positive/negative/neutral" --add "language:string"
+anysite llm generate dataset.yaml --source profiles --prompt "Write intro for {name}" --temperature 0.7
+anysite llm match dataset.yaml --source-a profiles --source-b companies --top-k 3
+anysite llm deduplicate dataset.yaml --source profiles --key name --threshold 0.8
+anysite llm cache-stats
+anysite llm cache-clear
+
 # Database commands
 anysite db add mydb
 anysite db list
@@ -110,6 +121,14 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 - `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`
 - `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference, diff-based incremental sync (`db_load.key` + `db_load.sync: full|append`). Supports diff-based incremental sync via `db_load.key` and `--snapshot` for loading specific dates
 - `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`
+- `llm/__init__.py` - `check_llm_deps()`, `load_llm_config()`, `get_api_key()` — verifies optional openai/anthropic are installed, loads LLM config from `~/.anysite/config.yaml`
+- `llm/models.py` - Dataclass models: `LLMProviderConfig`, `LLMConfig`, `LLMMessage`, `LLMResponse`, `StructuredSchema`, `ProcessorResult`
+- `llm/errors.py` - `LLMError`, `ConfigError`, `ProviderError`, `PromptError`
+- `llm/providers.py` - `LLMProvider` ABC, `OpenAIProvider` (AsyncOpenAI, JSON Schema structured output), `AnthropicProvider` (AsyncAnthropic, system-prompt structured output), `create_provider()` factory
+- `llm/cache.py` - `LLMCache` SQLite cache at `~/.anysite/llm_cache.db` with SHA256 keys, WAL mode
+- `llm/prompts.py` - `PromptBuilder` with template/builtin support, `BUILTIN_PROMPTS` (summarize, classify, classify_auto_detect, match, deduplicate, enrich), `filter_record_fields()` with dot-notation
+- `llm/processor.py` - `LLMProcessor`: async batch processing with rate limiting, semaphore concurrency, cache integration, JSON response parsing
+- `llm/cli.py` - Typer subcommands: `setup`, `summarize`, `classify`, `match`, `deduplicate`, `enrich`, `generate`, `cache-stats`, `cache-clear`
 - `db/__init__.py` - `check_db_deps()` — verifies optional psycopg is installed for Postgres
 - `db/config.py` - `ConnectionConfig`, `DatabaseType`, `OnConflict` enums and models
 - `db/manager.py` - `ConnectionManager`: named connections stored in `~/.anysite/connections.yaml`, adapter factory
@@ -179,6 +198,8 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
   metadata.json
 ```
 
+**LLM Subsystem** (`anysite llm`): LLM-powered analysis of collected dataset records using OpenAI or Anthropic. Supports summarization, classification (with auto-detect), enrichment with structured output, free-form text generation, cross-source record matching, and semantic deduplication. Optional — requires `pip install anysite-cli[llm]`. Registered in `main.py` via try/except ImportError. Configuration stored in `~/.anysite/config.yaml` under `llm:` key. Response caching in SQLite at `~/.anysite/llm_cache.db`. Rate limiting via token bucket, concurrent processing via asyncio semaphore.
+
 **Database Subsystem** (`anysite db`): Named database connections, schema inspection, data insertion, SQL queries. Supports SQLite and PostgreSQL.
 
 **Connection Storage**: `~/.anysite/connections.yaml`. Passwords stored as environment variable references (`password_env: PG_PASS`).
@@ -212,3 +233,4 @@ Tests are in `tests/` with subdirectories mirroring `src/anysite/`:
 - `test_utils/` — Field selection and retry
 - `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications, differ
 - `test_db/` — Database adapters, schema inference, connection manager, operations
+- `test_llm/` — LLM cache, CLI commands, models, processor, prompts, providers
