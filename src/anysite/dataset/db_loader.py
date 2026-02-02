@@ -315,8 +315,14 @@ class DatasetDbLoader:
                 return _extract_dot_value(record, diff_key)
             return record.get(diff_key)
 
+        # Build field mapping for db_load.fields filtering
+        field_mapping = self._get_db_field_mapping(source)
+
         # Determine the DB column name for the key
-        db_key_col = diff_key.replace(".", "_")
+        if field_mapping and diff_key in field_mapping:
+            db_key_col = field_mapping[diff_key]
+        else:
+            db_key_col = diff_key.replace(".", "_")
 
         # INSERT added records
         if result.added:
@@ -349,14 +355,28 @@ class DatasetDbLoader:
                 if not changed_fields:
                     continue
 
-                # Build SET clause from changed fields
+                # Build SET clause — only include fields that exist in the DB
                 set_parts = []
                 params: list[Any] = []
                 for field_name in changed_fields:
-                    new_val = record.get(field_name)
-                    safe_field = sanitize_identifier(field_name)
+                    if field_mapping is not None:
+                        if field_name not in field_mapping:
+                            continue
+                        db_col = field_mapping[field_name]
+                    else:
+                        db_col = field_name
+
+                    if "." in field_name:
+                        new_val = _extract_dot_value(record, field_name)
+                    else:
+                        new_val = record.get(field_name)
+
+                    safe_field = sanitize_identifier(db_col)
                     set_parts.append(f"{safe_field} = {ph}")
                     params.append(new_val)
+
+                if not set_parts:
+                    continue
 
                 params.append(str(key_val))
                 sql = (
@@ -375,6 +395,30 @@ class DatasetDbLoader:
             if other.dependency and other.dependency.from_source == source.id:
                 return other.dependency.field
         return None
+
+    def _get_db_field_mapping(self, source: DatasetSource) -> dict[str, str] | None:
+        """Build mapping of parquet_field -> db_column from db_load.fields.
+
+        Returns None if no explicit fields configured (all fields allowed).
+        """
+        db_load = source.db_load
+        if not db_load or not db_load.fields:
+            return None
+
+        mapping: dict[str, str] = {}
+        for field_spec in db_load.fields:
+            alias = None
+            upper = field_spec.upper()
+            as_idx = upper.find(" AS ")
+            if as_idx != -1:
+                alias = field_spec[as_idx + 4:].strip()
+                source_field = field_spec[:as_idx].strip()
+            else:
+                source_field = field_spec
+
+            col_name = alias or source_field.replace(".", "_")
+            mapping[source_field] = col_name
+        return mapping
 
     def _placeholder(self) -> str:
         """Get the parameter placeholder for the dialect."""

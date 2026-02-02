@@ -833,3 +833,128 @@ class TestPostgresPlaceholders:
             assert len(update_calls) == 1
             assert "%s" in update_calls[0][0]
             assert "?" not in update_calls[0][0]
+
+
+class TestUpdateFieldFiltering:
+    """Test that UPDATE only targets fields present in db_load.fields."""
+
+    def _setup_two_snapshots(self, tmp_path, source_id, old_records, new_records):
+        source_dir = get_source_dir(tmp_path / "data", source_id)
+        write_parquet(old_records, source_dir / "2026-01-01.parquet")
+        write_parquet(new_records, source_dir / "2026-01-02.parquet")
+
+    def test_update_only_db_load_fields(self, tmp_path):
+        """UPDATE should skip fields not in db_load.fields."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name", fields=["name", "score"]),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90, "extra": "old"}],
+            new_records=[{"name": "Alice", "score": 95, "extra": "new"}],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Full insert only creates columns from db_load.fields
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            # Table should only have id, name, score (no extra)
+            schema = adapter.get_table_schema("items")
+            col_names = [c["name"] for c in schema]
+            assert "extra" not in col_names
+            assert "score" in col_names
+
+            # Diff sync — extra changed but should be skipped
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"] == 1  # score changed
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["score"] == 95
+
+    def test_update_with_dot_notation_alias(self, tmp_path):
+        """UPDATE uses correct DB column name for aliased dot-notation fields."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(
+                    key="meta.id",
+                    fields=["meta.id AS meta_id", "text", "count"],
+                ),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[
+                {"meta": json.dumps({"id": "x1"}), "text": "hello", "count": 5, "other": "a"},
+            ],
+            new_records=[
+                {"meta": json.dumps({"id": "x1"}), "text": "updated", "count": 10, "other": "b"},
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["meta_id"] == "x1"
+            assert rows[0]["text"] == "hello"
+
+            # Diff sync — text and count changed, other should be skipped
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["text"] == "updated"
+            assert rows[0]["count"] == 10
+
+    def test_update_skipped_when_no_db_fields_changed(self, tmp_path):
+        """If only non-DB fields changed, no UPDATE should happen."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name", fields=["name", "score"]),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90, "extra": "old"}],
+            # score unchanged, only extra changed
+            new_records=[{"name": "Alice", "score": 90, "extra": "new"}],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            # extra is not in db_load.fields, so no actual update
+            assert results["items"] == 0
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 1
+            assert rows[0]["score"] == 90
