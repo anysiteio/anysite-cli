@@ -196,6 +196,8 @@ sources:
         path: ./output/companies-{{date}}.csv
         format: csv
     db_load:
+      key: _input_value                    # Unique key for incremental sync
+      sync: full                           # full (default) or append (no DELETE)
       fields: [name, url, employee_count]
 
   - id: employees
@@ -211,6 +213,8 @@ sources:
       count: 5
     refresh: always                       # Re-collect every run with --incremental
     db_load:
+      key: urn.value                       # Unique key for incremental sync
+      sync: append                         # Keep old records (no DELETE on diff)
       fields: [name, url, headline]
 
 storage:
@@ -255,8 +259,14 @@ anysite dataset query dataset.yaml --interactive
 anysite dataset stats dataset.yaml --source companies
 anysite dataset profile dataset.yaml
 
-# Load into PostgreSQL with automatic FK linking
+# Load into PostgreSQL with automatic FK linking (incremental sync with db_load.key)
+anysite dataset load-db dataset.yaml -c pg
+
+# Drop and reload from latest snapshot
 anysite dataset load-db dataset.yaml -c pg --drop-existing
+
+# Load a specific snapshot date
+anysite dataset load-db dataset.yaml -c pg --snapshot 2026-01-15
 
 # Run history and logs
 anysite dataset history my-dataset
@@ -265,8 +275,9 @@ anysite dataset logs my-dataset --run 42
 # Generate cron/systemd schedule
 anysite dataset schedule dataset.yaml --incremental --load-db pg
 
-# Compare snapshots (diff two collection dates)
+# Compare snapshots (diff two collection dates, supports dot-notation keys)
 anysite dataset diff dataset.yaml --source employees --key _input_value
+anysite dataset diff dataset.yaml --source profiles --key urn.value --fields "name,headline"
 
 # Reset incremental state
 anysite dataset reset-cursor dataset.yaml

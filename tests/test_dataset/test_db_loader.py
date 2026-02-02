@@ -636,3 +636,103 @@ class TestDropExistingWithDiffKey:
             assert len(rows) == 2
             assert rows[0]["name"] == "Alice"
             assert rows[0]["score"] == 95
+
+
+class TestAppendSyncMode:
+    """Test sync: append skips DELETE but still INSERTs and UPDATEs."""
+
+    def _setup_two_snapshots(self, tmp_path, source_id, old_records, new_records):
+        source_dir = get_source_dir(tmp_path / "data", source_id)
+        write_parquet(old_records, source_dir / "2026-01-01.parquet")
+        write_parquet(new_records, source_dir / "2026-01-02.parquet")
+
+    def test_append_keeps_removed_records(self, tmp_path):
+        """With sync: append, records missing from new snapshot are NOT deleted."""
+        sources = [
+            DatasetSource(
+                id="posts", endpoint="/api/posts",
+                db_load=DbLoadConfig(key="uid", sync="append"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "posts",
+            old_records=[
+                {"uid": "a", "text": "Hello", "likes": 10},
+                {"uid": "b", "text": "World", "likes": 5},
+                {"uid": "c", "text": "Bye", "likes": 3},
+            ],
+            new_records=[
+                {"uid": "a", "text": "Hello", "likes": 15},  # changed
+                {"uid": "d", "text": "New post", "likes": 0},  # added
+                # b and c removed from snapshot
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Set up DB with old data
+            source_dir = get_source_dir(tmp_path / "data", "posts")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "posts", source_dir / "2026-01-01.parquet"
+            )
+            assert len(adapter.fetch_all("SELECT * FROM posts")) == 3
+
+            # Diff sync with append mode
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            # 1 added + 1 changed = 2 (no deletes)
+            assert results["posts"] == 2
+
+            rows = adapter.fetch_all("SELECT * FROM posts ORDER BY uid")
+            assert len(rows) == 4  # 3 original + 1 added, none deleted
+            uids = [r["uid"] for r in rows]
+            assert "a" in uids  # updated
+            assert "b" in uids  # kept (not deleted)
+            assert "c" in uids  # kept (not deleted)
+            assert "d" in uids  # added
+
+            # Verify update applied
+            a_row = [r for r in rows if r["uid"] == "a"][0]
+            assert a_row["likes"] == 15
+
+    def test_full_sync_deletes_removed_records(self, tmp_path):
+        """With sync: full (default), removed records ARE deleted."""
+        sources = [
+            DatasetSource(
+                id="posts", endpoint="/api/posts",
+                db_load=DbLoadConfig(key="uid", sync="full"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "posts",
+            old_records=[
+                {"uid": "a", "text": "Hello", "likes": 10},
+                {"uid": "b", "text": "World", "likes": 5},
+            ],
+            new_records=[
+                {"uid": "a", "text": "Hello", "likes": 15},
+                # b removed
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            source_dir = get_source_dir(tmp_path / "data", "posts")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "posts", source_dir / "2026-01-01.parquet"
+            )
+            assert len(adapter.fetch_all("SELECT * FROM posts")) == 2
+
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["posts"] == 2  # 1 changed + 1 removed
+
+            rows = adapter.fetch_all("SELECT * FROM posts")
+            assert len(rows) == 1
+            assert rows[0]["uid"] == "a"

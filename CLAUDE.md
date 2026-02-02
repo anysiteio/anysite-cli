@@ -49,12 +49,14 @@ anysite dataset query dataset.yaml --interactive
 anysite dataset stats dataset.yaml --source profiles
 anysite dataset profile dataset.yaml
 anysite dataset load-db dataset.yaml -c pg --drop-existing
+anysite dataset load-db dataset.yaml -c pg --snapshot 2026-01-15
 anysite dataset history my-dataset
 anysite dataset logs my-dataset --run 42
 anysite dataset schedule dataset.yaml --incremental --load-db pg
 anysite dataset schedule dataset.yaml --systemd --load-db pg
 anysite dataset diff dataset.yaml --source profiles --key _input_value
-anysite dataset diff dataset.yaml --source profiles --key urn --from 2026-01-30 --to 2026-02-01
+anysite dataset diff dataset.yaml --source profiles --key urn.value --from 2026-01-30 --to 2026-02-01
+anysite dataset diff dataset.yaml --source profiles --key urn.value --fields "name,headline,follower_count"
 anysite dataset reset-cursor dataset.yaml
 anysite dataset reset-cursor dataset.yaml --source profiles
 
@@ -104,9 +106,9 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 - `dataset/history.py` - `HistoryStore` (SQLite at `~/.anysite/dataset_history.db`): run start/finish tracking. `LogManager`: file-based per-run logs at `~/.anysite/logs/`
 - `dataset/scheduler.py` - `ScheduleGenerator`: crontab and systemd timer unit generation from cron expressions
 - `dataset/notifications.py` - `WebhookNotifier`: POST to webhook URLs on collection complete/failure
-- `dataset/differ.py` - `DatasetDiffer`: compare two Parquet snapshots using DuckDB (added/removed/changed records). `DiffResult` dataclass, `format_diff_table()` and `format_diff_records()` formatters
+- `dataset/differ.py` - `DatasetDiffer`: compare two Parquet snapshots using DuckDB (added/removed/changed records). Supports dot-notation keys via `json_extract_string()`. `DiffResult` dataclass, `format_diff_table()` and `format_diff_records()` formatters with output field filtering
 - `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`
-- `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference
+- `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference, diff-based incremental sync (`db_load.key` + `db_load.sync: full|append`). Supports diff-based incremental sync via `db_load.key` and `--snapshot` for loading specific dates
 - `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`
 - `db/__init__.py` - `check_db_deps()` — verifies optional psycopg is installed for Postgres
 - `db/config.py` - `ConnectionConfig`, `DatabaseType`, `OnConflict` enums and models
@@ -164,8 +166,11 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 - Schema inference from Parquet records via `infer_table_schema()`
 - Auto-increment `id` primary key per table
 - FK linking via provenance: parent `_input_value` → child `{parent}_id` column
-- Optional `db_load` config per source: field selection, dot-notation extraction, custom table names, field exclusion
+- Optional `db_load` config per source: field selection, dot-notation extraction, custom table names, field exclusion, `key` for diff-based incremental sync
 - Topological loading order (parents before children)
+- Diff-based incremental sync: when `db_load.key` is set and table exists with >=2 snapshots, diffs the two most recent and applies INSERT/DELETE/UPDATE delta
+- `--snapshot YYYY-MM-DD` flag to load a specific snapshot date
+- `--drop-existing` forces full INSERT of latest snapshot
 
 **Dataset Storage Layout**:
 ```

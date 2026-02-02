@@ -82,6 +82,10 @@ class DbLoadConfig(BaseModel):
 
     table: str | None = Field(default=None, description="Override table name (default: source id)")
     key: str | None = Field(default=None, description="Unique key field for diff-based DB sync (e.g., urn.value)")
+    sync: Literal["full", "append"] = Field(
+        default="full",
+        description="Sync mode: 'full' applies INSERT/DELETE/UPDATE, 'append' skips DELETE (keeps old records)",
+    )
     fields: list[str] = Field(default_factory=list, description="Fields to include (empty = all)")
     exclude: list[str] = Field(
         default_factory=lambda: ["_input_value", "_parent_source"],

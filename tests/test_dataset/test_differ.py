@@ -8,6 +8,7 @@ import pytest
 from anysite.dataset.differ import (
     DatasetDiffer,
     DiffResult,
+    _values_differ,
     format_diff_records,
     format_diff_table,
 )
@@ -336,7 +337,8 @@ class TestFormatDiffRecords:
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice Updated"
         assert rows[0]["name__old"] == "Alice"
-        assert "_changed_fields" not in rows[0]
+        assert "_changed_fields" in rows[0]
+        assert rows[0]["_changed_fields"] == ["name"]
 
 
 class TestDotNotationKey:
@@ -481,3 +483,92 @@ class TestOutputFieldFiltering:
         assert "name" not in rows[0]
         assert "name__old" not in rows[0]
         assert "urn" in rows[0]  # key always included
+
+
+class TestChangedFieldsDetail:
+    """Verify _changed_fields and __old columns appear in output."""
+
+    def test_changed_fields_in_json_output(self):
+        """format_diff_records includes _changed_fields for changed records."""
+        result = DiffResult(
+            source_id="items",
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 2),
+            key="id",
+            changed=[{
+                "id": "1",
+                "name": "Alice Updated",
+                "name__old": "Alice",
+                "score": 90,
+                "score__old": 90,
+                "_changed_fields": ["name"],
+            }],
+        )
+
+        rows = format_diff_records(result)
+        assert len(rows) == 1
+        assert "_changed_fields" in rows[0]
+        assert rows[0]["_changed_fields"] == ["name"]
+        assert "name__old" in rows[0]
+        assert rows[0]["name__old"] == "Alice"
+
+    def test_changed_fields_not_in_table_output(self):
+        """format_diff_table uses old→new arrows instead of _changed_fields."""
+        result = DiffResult(
+            source_id="items",
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 2),
+            key="id",
+            changed=[{
+                "id": "1",
+                "name": "Bob",
+                "name__old": "Alice",
+                "score": 90,
+                "score__old": 90,
+                "_changed_fields": ["name"],
+            }],
+        )
+
+        rows = format_diff_table(result)
+        assert len(rows) == 1
+        assert "_changed_fields" not in rows[0]
+        assert "→" in rows[0]["name"]
+        assert rows[0]["score"] == 90  # unchanged, no arrow
+
+    def test_values_differ_with_dicts(self):
+        """_values_differ handles dict comparison correctly."""
+        assert not _values_differ({"a": 1}, {"a": 1})
+        assert _values_differ({"a": 1}, {"a": 2})
+        assert not _values_differ({"b": 2, "a": 1}, {"a": 1, "b": 2})  # key order
+
+    def test_values_differ_with_lists(self):
+        """_values_differ handles list comparison."""
+        assert not _values_differ([1, 2], [1, 2])
+        assert _values_differ([1, 2], [1, 3])
+
+    def test_values_differ_dict_vs_string(self):
+        """_values_differ handles dict vs JSON string comparison."""
+        assert _values_differ({"a": 1}, '{"a": 1}')
+
+    def test_fallback_all_compare_fields(self, tmp_path):
+        """When Python can't identify changed fields, all compare fields are marked."""
+        source_dir = tmp_path / "raw" / "items"
+        source_dir.mkdir(parents=True)
+
+        # Write old and new snapshots with a value DuckDB sees as different
+        write_parquet(
+            [{"id": "1", "data": json.dumps({"x": 1})}],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [{"id": "1", "data": json.dumps({"x": 1, "y": 2})}],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        differ = DatasetDiffer(tmp_path)
+        result = differ.diff("items", "id")
+
+        assert len(result.changed) == 1
+        record = result.changed[0]
+        assert "_changed_fields" in record
+        assert len(record["_changed_fields"]) > 0

@@ -344,6 +344,9 @@ class DatasetDiffer:
                 old_val = record.get(old_key)
                 if _values_differ(new_val, old_val):
                     changed_fields.append(col)
+            # Fallback: DuckDB detected a change but Python comparison missed it
+            if not changed_fields:
+                changed_fields = list(compare_fields)
             record["_changed_fields"] = changed_fields
 
         return records
@@ -376,6 +379,15 @@ def _values_differ(a: Any, b: Any) -> bool:
         try:
             return json.loads(a) != json.loads(b)
         except (json.JSONDecodeError, ValueError):
+            pass
+    # Handle complex types (dict, list) — compare via JSON serialization
+    # to catch differences DuckDB sees but Python equality misses
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        try:
+            return json.dumps(a, sort_keys=True, default=str) != json.dumps(
+                b, sort_keys=True, default=str
+            )
+        except (TypeError, ValueError):
             pass
     return True
 
@@ -452,6 +464,8 @@ def format_diff_records(
 
     for record in result.changed:
         row: dict[str, Any] = {"_diff": "changed"}
+        changed_fields = record.get("_changed_fields", [])
+        row["_changed_fields"] = changed_fields
         for k, v in record.items():
             if k == "_changed_fields":
                 continue

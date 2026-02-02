@@ -301,9 +301,13 @@ class DatasetDbLoader:
         """Diff-based incremental sync: compare two most recent snapshots, apply delta."""
         result = differ.diff(source.id, diff_key)
         total = 0
+        sync_mode = source.db_load.sync if source.db_load else "full"
 
         if dry_run:
-            return len(result.added) + len(result.removed) + len(result.changed)
+            count = len(result.added) + len(result.changed)
+            if sync_mode == "full":
+                count += len(result.removed)
+            return count
 
         # Extract key value from a record (handles dot-notation)
         def _get_key_val(record: dict[str, Any]) -> Any:
@@ -321,8 +325,8 @@ class DatasetDbLoader:
                 self.adapter.insert_batch(table_name, [row])
                 total += 1
 
-        # DELETE removed records
-        if result.removed:
+        # DELETE removed records (skipped in append mode)
+        if result.removed and sync_mode == "full":
             safe_col = sanitize_identifier(db_key_col)
             for record in result.removed:
                 key_val = _get_key_val(record)

@@ -75,13 +75,33 @@ def read_parquet(path: Path) -> list[dict[str, Any]]:
         tables = [pq.read_table(f) for f in files]
         import pyarrow as pa
 
-        table = pa.concat_tables(tables)
+        table = pa.concat_tables(tables, promote_options="permissive")
     else:
         if not path.exists():
             return []
         table = pq.read_table(path)
 
     return table.to_pylist()
+
+
+def read_latest_parquet(path: Path) -> list[dict[str, Any]]:
+    """Read records from the most recent Parquet snapshot in a directory.
+
+    Unlike ``read_parquet(dir)``, this reads only the latest file, avoiding
+    schema mismatch errors when snapshots have different column types.
+
+    Args:
+        path: Directory containing dated .parquet files.
+
+    Returns:
+        List of dicts from the newest snapshot, or [] if none found.
+    """
+    if not path.is_dir():
+        return read_parquet(path)
+    files = sorted(path.glob("*.parquet"))
+    if not files:
+        return []
+    return read_parquet(files[-1])
 
 
 def get_source_dir(base_path: Path, source_id: str) -> Path:

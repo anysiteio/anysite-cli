@@ -19,6 +19,7 @@ from anysite.dataset.models import DatasetConfig, DatasetSource
 from anysite.dataset.storage import (
     MetadataStore,
     get_parquet_path,
+    read_latest_parquet,
     read_parquet,
     write_parquet,
 )
@@ -412,9 +413,9 @@ async def _collect_dependent(
     if dep is None:
         raise DatasetError(f"Source {source.id} has no dependency defined")
 
-    # Read parent data
+    # Read parent data (latest snapshot only to avoid schema mismatch)
     parent_dir = base_path / "raw" / dep.from_source
-    parent_records = read_parquet(parent_dir)
+    parent_records = read_latest_parquet(parent_dir)
 
     if not parent_records:
         if not quiet:
@@ -627,7 +628,7 @@ def _count_dependent_inputs(
     if dep is None:
         return None
     parent_dir = base_path / "raw" / dep.from_source
-    parent_records = read_parquet(parent_dir)
+    parent_records = read_latest_parquet(parent_dir)
     if not parent_records:
         info = metadata.get_source_info(dep.from_source)
         return info.get("record_count") if info else None
