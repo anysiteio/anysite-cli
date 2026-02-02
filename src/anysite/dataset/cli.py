@@ -357,6 +357,10 @@ def load_db(
         bool,
         typer.Option("--quiet", "-q", help="Suppress progress output"),
     ] = False,
+    snapshot: Annotated[
+        str | None,
+        typer.Option("--snapshot", help="Load a specific snapshot date (YYYY-MM-DD)"),
+    ] = None,
 ) -> None:
     """Load collected Parquet data into a relational database with FK linking."""
     config = _load_config(config_path)
@@ -379,6 +383,7 @@ def load_db(
                 source_filter=source,
                 drop_existing=drop_existing,
                 dry_run=dry_run,
+                snapshot=snapshot,
             )
         except Exception as e:
             typer.echo(f"Load error: {e}", err=True)
@@ -519,7 +524,11 @@ def diff_cmd(
         return
 
     # Format and output
-    rows = format_diff_table(result) if format == "table" else format_diff_records(result)
+    rows = (
+        format_diff_table(result, output_fields=field_list)
+        if format == "table"
+        else format_diff_records(result, output_fields=field_list)
+    )
 
     _output_results(rows, format, output)
 

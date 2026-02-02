@@ -12,6 +12,31 @@ from anysite.dataset.errors import DatasetError
 from anysite.dataset.storage import get_source_dir
 
 
+def _build_key_expr(key: str, all_columns: list[str]) -> tuple[str, str]:
+    """Build a DuckDB key expression, supporting dot-notation for JSON fields.
+
+    Returns:
+        (key_expr, key_alias) — the SQL expression and a display alias.
+        For simple keys: ('"field"', 'field')
+        For dot-notation: ("json_extract_string(\"urn\", '$.value')", 'urn.value')
+    """
+    if "." not in key:
+        if key not in all_columns:
+            raise DatasetError(
+                f"Key field '{key}' not found. "
+                f"Available: {', '.join(all_columns)}"
+            )
+        return f'"{key}"', key
+
+    root, rest = key.split(".", 1)
+    if root not in all_columns:
+        raise DatasetError(
+            f"Root field '{root}' (from key '{key}') not found. "
+            f"Available: {', '.join(all_columns)}"
+        )
+    return f"json_extract_string(\"{root}\", '$.{rest}')", key
+
+
 @dataclass
 class DiffResult:
     """Result of comparing two dataset snapshots."""
@@ -24,6 +49,7 @@ class DiffResult:
     removed: list[dict[str, Any]] = field(default_factory=list)
     changed: list[dict[str, Any]] = field(default_factory=list)
     unchanged_count: int = 0
+    fields: list[str] | None = field(default=None)
 
     @property
     def has_changes(self) -> bool:
@@ -63,10 +89,11 @@ class DatasetDiffer:
 
         Args:
             source_id: Source to compare.
-            key: Field to match records by (e.g., ``_input_value``, ``urn``).
+            key: Field to match records by.  Supports dot-notation for
+                JSON fields (e.g., ``urn.value``).
             from_date: Older snapshot date (default: second-to-last).
             to_date: Newer snapshot date (default: latest).
-            fields: Only compare these fields (default: all).
+            fields: Only compare (and output) these fields (default: all).
 
         Returns:
             DiffResult with added, removed, changed lists.
@@ -153,50 +180,43 @@ class DatasetDiffer:
             info = conn.execute("DESCRIBE _new").fetchall()
             all_columns = [col[0] for col in info]
 
-            if key not in all_columns:
-                raise DatasetError(
-                    f"Key field '{key}' not found in {source_id}. "
-                    f"Available: {', '.join(all_columns)}"
-                )
+            # Build key expression (supports dot-notation)
+            key_expr, key_alias = _build_key_expr(key, all_columns)
 
             # Determine which fields to compare
             compare_fields = fields if fields else [
-                c for c in all_columns if c != key
+                c for c in all_columns if c != key and c != key.split(".")[0]
             ]
             # Filter to fields that actually exist
             compare_fields = [c for c in compare_fields if c in all_columns]
 
-            quoted_key = f'"{key}"'
+            # Determine output columns: if fields specified, restrict to key + fields
+            if fields:
+                output_columns = [key_alias] + [
+                    f for f in fields if f in all_columns
+                ]
+            else:
+                output_columns = None  # all columns
 
             # Added: in new but not in old
-            added = conn.execute(
-                f"SELECT * FROM _new "
-                f"WHERE {quoted_key} NOT IN (SELECT {quoted_key} FROM _old)"
-            ).fetchall()
-            added_cols = [d[0] for d in conn.execute(
-                "DESCRIBE _new"
-            ).fetchall()]
-            added_records = [dict(zip(added_cols, row, strict=False)) for row in added]
+            added_records = self._query_added_removed(
+                conn, "_new", "_old", key_expr, key_alias, all_columns, output_columns
+            )
 
             # Removed: in old but not in new
-            removed = conn.execute(
-                f"SELECT * FROM _old "
-                f"WHERE {quoted_key} NOT IN (SELECT {quoted_key} FROM _new)"
-            ).fetchall()
-            removed_cols = [d[0] for d in conn.execute(
-                "DESCRIBE _old"
-            ).fetchall()]
-            removed_records = [dict(zip(removed_cols, row, strict=False)) for row in removed]
+            removed_records = self._query_added_removed(
+                conn, "_old", "_new", key_expr, key_alias, all_columns, output_columns
+            )
 
             # Changed: matching key, different values
             changed_records = self._find_changed(
-                conn, key, compare_fields, all_columns
+                conn, key_expr, key_alias, compare_fields, all_columns, output_columns
             )
 
             # Count unchanged
             total_matched = conn.execute(
                 f"SELECT COUNT(*) FROM _new n "
-                f"JOIN _old o ON n.{quoted_key} = o.{quoted_key}"
+                f"JOIN _old o ON ({_requalify(key_expr, 'n')}) = ({_requalify(key_expr, 'o')})"
             ).fetchone()
             matched_count = total_matched[0] if total_matched else 0
             unchanged_count = matched_count - len(changed_records)
@@ -210,22 +230,58 @@ class DatasetDiffer:
                 removed=removed_records,
                 changed=changed_records,
                 unchanged_count=unchanged_count,
+                fields=fields,
             )
         finally:
             conn.close()
 
-    def _find_changed(
-        self,
+    @staticmethod
+    def _query_added_removed(
         conn: Any,
-        key: str,
+        present_view: str,
+        absent_view: str,
+        key_expr: str,
+        key_alias: str,
+        all_columns: list[str],
+        output_columns: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        """Query records present in one view but not the other."""
+        # Build SELECT list
+        if output_columns:
+            select_parts = []
+            for col in output_columns:
+                if col == key_alias and "." in col:
+                    select_parts.append(f"{key_expr} AS \"{key_alias}\"")
+                else:
+                    select_parts.append(f'"{col}"')
+            select_clause = ", ".join(select_parts)
+        else:
+            if "." in key_alias:
+                select_clause = f"*, {key_expr} AS \"{key_alias}\""
+            else:
+                select_clause = "*"
+
+        sql = (
+            f"SELECT {select_clause} FROM {present_view} "
+            f"WHERE ({key_expr}) NOT IN (SELECT ({key_expr}) FROM {absent_view})"
+        )
+        result = conn.execute(sql)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        return [dict(zip(columns, row, strict=False)) for row in rows]
+
+    @staticmethod
+    def _find_changed(
+        conn: Any,
+        key_expr: str,
+        key_alias: str,
         compare_fields: list[str],
         all_columns: list[str],
+        output_columns: list[str] | None,
     ) -> list[dict[str, Any]]:
         """Find records that exist in both snapshots but have different values."""
         if not compare_fields:
             return []
-
-        quoted_key = f'"{key}"'
 
         # Build WHERE clause: any compared field differs
         where_parts = []
@@ -234,21 +290,43 @@ class DatasetDiffer:
             where_parts.append(f"n.{qc} IS DISTINCT FROM o.{qc}")
         where_clause = " OR ".join(where_parts)
 
-        # Select new values + old values for compared fields
-        select_parts = [f"n.{quoted_key}"]
-        for col in all_columns:
-            if col != key:
-                qc = f'"{col}"'
-                select_parts.append(f"n.{qc}")
-        for col in compare_fields:
-            qc = f'"{col}"'
-            select_parts.append(f"o.{qc} AS \"{col}__old\"")
+        # Build JOIN condition
+        join_key_n = _requalify(key_expr, "n")
+        join_key_o = _requalify(key_expr, "o")
+        join_cond = f"({join_key_n}) = ({join_key_o})"
+
+        # Build SELECT: key + output fields + __old for compare fields
+        if output_columns:
+            # Restricted output
+            select_parts = []
+            for col in output_columns:
+                if col == key_alias and "." in col:
+                    select_parts.append(f"{_requalify(key_expr, 'n')} AS \"{key_alias}\"")
+                else:
+                    select_parts.append(f"n.\"{col}\"")
+            for col in compare_fields:
+                # Include __old for compare fields that are in output
+                if col in [c for c in output_columns if c != key_alias]:
+                    select_parts.append(f"o.\"{col}\" AS \"{col}__old\"")
+        else:
+            # Full output
+            select_parts = []
+            if "." in key_alias:
+                select_parts.append(f"{_requalify(key_expr, 'n')} AS \"{key_alias}\"")
+            else:
+                select_parts.append(f"n.\"{key_alias}\"")
+            for col in all_columns:
+                if col == key_alias:
+                    continue
+                select_parts.append(f"n.\"{col}\"")
+            for col in compare_fields:
+                select_parts.append(f"o.\"{col}\" AS \"{col}__old\"")
 
         select_clause = ", ".join(select_parts)
 
         sql = (
             f"SELECT {select_clause} FROM _new n "
-            f"JOIN _old o ON n.{quoted_key} = o.{quoted_key} "
+            f"JOIN _old o ON {join_cond} "
             f"WHERE {where_clause}"
         )
 
@@ -271,6 +349,24 @@ class DatasetDiffer:
         return records
 
 
+def _requalify(key_expr: str, prefix: str) -> str:
+    """Requalify a key expression with a table alias prefix.
+
+    For simple keys like '"field"', returns 'prefix."field"'.
+    For json_extract_string("col", '$.path'), returns
+    json_extract_string(prefix."col", '$.path').
+    """
+    if key_expr.startswith("json_extract_string("):
+        # Replace the column reference inside json_extract_string
+        inner = key_expr[len("json_extract_string("):]
+        # inner looks like: "col", '$.path')
+        col_end = inner.index(",")
+        col = inner[:col_end].strip()
+        rest = inner[col_end:]
+        return f"json_extract_string({prefix}.{col}{rest}"
+    return f"{prefix}.{key_expr}"
+
+
 def _values_differ(a: Any, b: Any) -> bool:
     """Compare two values, treating JSON strings as equivalent to their parsed form."""
     if a == b:
@@ -284,21 +380,30 @@ def _values_differ(a: Any, b: Any) -> bool:
     return True
 
 
-def format_diff_table(result: DiffResult) -> list[dict[str, Any]]:
+def format_diff_table(
+    result: DiffResult,
+    *,
+    output_fields: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Format a DiffResult into a flat list of dicts for table/json output.
 
     Each record gets a ``_diff`` column with value ``added``, ``removed``,
     or ``changed``.  For changed records in table mode, modified field
     values are formatted as ``old → new``.
+
+    Args:
+        result: The diff result.
+        output_fields: If set, only include these fields (plus ``_diff`` and key).
     """
+    allowed = _build_allowed_set(result.key, output_fields)
     rows: list[dict[str, Any]] = []
 
     for record in result.added:
-        row = {"_diff": "added", **record}
+        row = {"_diff": "added", **_filter_row(record, allowed)}
         rows.append(row)
 
     for record in result.removed:
-        row = {"_diff": "removed", **record}
+        row = {"_diff": "removed", **_filter_row(record, allowed)}
         rows.append(row)
 
     for record in result.changed:
@@ -308,6 +413,8 @@ def format_diff_table(result: DiffResult) -> list[dict[str, Any]]:
             if k == "_changed_fields":
                 continue
             if k.endswith("__old"):
+                continue
+            if allowed and k not in allowed:
                 continue
             # For changed fields, format as "old → new"
             if k in changed_fields:
@@ -320,29 +427,63 @@ def format_diff_table(result: DiffResult) -> list[dict[str, Any]]:
     return rows
 
 
-def format_diff_records(result: DiffResult) -> list[dict[str, Any]]:
+def format_diff_records(
+    result: DiffResult,
+    *,
+    output_fields: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Format a DiffResult for JSON/CSV output.
 
     Each record gets ``_diff`` column.  Changed records include both
     current values and ``field__old`` columns.
+
+    Args:
+        result: The diff result.
+        output_fields: If set, only include these fields (plus ``_diff``, key, and ``__old``).
     """
+    allowed = _build_allowed_set(result.key, output_fields)
     rows: list[dict[str, Any]] = []
 
     for record in result.added:
-        rows.append({"_diff": "added", **record})
+        rows.append({"_diff": "added", **_filter_row(record, allowed)})
 
     for record in result.removed:
-        rows.append({"_diff": "removed", **record})
+        rows.append({"_diff": "removed", **_filter_row(record, allowed)})
 
     for record in result.changed:
-        row = {"_diff": "changed"}
+        row: dict[str, Any] = {"_diff": "changed"}
         for k, v in record.items():
             if k == "_changed_fields":
                 continue
+            if allowed and k not in allowed and not k.endswith("__old"):
+                continue
+            if k.endswith("__old") and allowed:
+                base = k[: -len("__old")]
+                if base not in allowed:
+                    continue
             row[k] = v
         rows.append(row)
 
     return rows
+
+
+def _build_allowed_set(key: str, output_fields: list[str] | None) -> set[str] | None:
+    """Build the set of allowed field names for output filtering."""
+    if not output_fields:
+        return None
+    allowed = set(output_fields)
+    allowed.add(key)
+    # Also add the root column for dot-notation keys
+    if "." in key:
+        allowed.add(key.split(".")[0])
+    return allowed
+
+
+def _filter_row(record: dict[str, Any], allowed: set[str] | None) -> dict[str, Any]:
+    """Filter a record to only allowed fields."""
+    if not allowed:
+        return record
+    return {k: v for k, v in record.items() if k in allowed}
 
 
 def _format_val(v: Any) -> str:

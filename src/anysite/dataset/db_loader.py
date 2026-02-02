@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 from anysite.dataset.models import DatasetConfig, DatasetSource
 from anysite.dataset.storage import get_source_dir, read_parquet
 from anysite.db.adapters.base import DatabaseAdapter
 from anysite.db.schema.inference import infer_table_schema
+from anysite.db.utils.sanitize import sanitize_identifier
+
+logger = logging.getLogger(__name__)
 
 
 def _get_dialect(adapter: DatabaseAdapter) -> str:
@@ -86,15 +92,31 @@ def _filter_record(
         return {k: v for k, v in record.items() if k not in exclude}
 
 
+def _get_latest_parquet(base_path: Path, source_id: str) -> Path | None:
+    """Return the path to the most recent snapshot for a source."""
+    source_dir = get_source_dir(base_path, source_id)
+    if not source_dir.exists():
+        return None
+    files = sorted(source_dir.glob("*.parquet"))
+    return files[-1] if files else None
+
+
+def _get_snapshot_for_date(base_path: Path, source_id: str, d: date) -> Path | None:
+    """Return the parquet path for a specific snapshot date."""
+    source_dir = get_source_dir(base_path, source_id)
+    path = source_dir / f"{d.isoformat()}.parquet"
+    return path if path.exists() else None
+
+
 class DatasetDbLoader:
     """Load dataset Parquet data into a relational database.
 
-    Handles:
-    - Schema inference from Parquet records
-    - Auto-increment primary keys (``id`` column)
-    - Foreign key linking via provenance ``_input_value`` column
-    - Dot-notation field extraction for JSON columns
-    - Topological loading order (parents before children)
+    Supports diff-based incremental sync when ``db_load.key`` is configured:
+    compares the two most recent snapshots and applies INSERT/DELETE/UPDATE
+    to keep the database in sync.
+
+    Falls back to full INSERT of the latest snapshot when no key is set
+    or when the table doesn't exist yet.
     """
 
     def __init__(
@@ -115,16 +137,18 @@ class DatasetDbLoader:
         source_filter: str | None = None,
         drop_existing: bool = False,
         dry_run: bool = False,
+        snapshot: str | None = None,
     ) -> dict[str, int]:
         """Load all sources into the database in dependency order.
 
         Args:
             source_filter: Only load this source (and dependencies).
-            drop_existing: Drop tables before creating.
+            drop_existing: Drop tables before creating, then full INSERT latest.
             dry_run: Show plan without executing.
+            snapshot: Load a specific snapshot date (YYYY-MM-DD).
 
         Returns:
-            Mapping of source_id to number of rows loaded.
+            Mapping of source_id to number of rows loaded/affected.
         """
         sources = self.config.topological_sort()
 
@@ -139,6 +163,7 @@ class DatasetDbLoader:
                 source,
                 drop_existing=drop_existing,
                 dry_run=dry_run,
+                snapshot=snapshot,
             )
             results[source.id] = count
 
@@ -150,17 +175,63 @@ class DatasetDbLoader:
         *,
         drop_existing: bool = False,
         dry_run: bool = False,
+        snapshot: str | None = None,
     ) -> int:
-        """Load a single source into the database."""
-        source_dir = get_source_dir(self.base_path, source.id)
-        if not source_dir.exists() or not any(source_dir.glob("*.parquet")):
-            return 0
+        """Load a single source into the database.
 
-        raw_records = read_parquet(source_dir)
+        Strategy:
+        1. ``drop_existing``: drop table → full INSERT of latest snapshot
+        2. ``snapshot``: full INSERT of that specific snapshot
+        3. Table doesn't exist: full INSERT of latest snapshot
+        4. Table exists + ``db_load.key`` set + ≥2 snapshots: diff-based sync
+        5. Fallback: full INSERT of latest snapshot
+        """
+        table_name = _table_name_for(source)
+
+        # Handle drop_existing
+        if drop_existing and self.adapter.table_exists(table_name):
+            self.adapter.execute(f"DROP TABLE {table_name}")
+
+        # Determine which parquet to load
+        if snapshot:
+            snapshot_date = date.fromisoformat(snapshot)
+            parquet_path = _get_snapshot_for_date(self.base_path, source.id, snapshot_date)
+            if parquet_path is None:
+                return 0
+            return self._full_insert(source, table_name, parquet_path, dry_run=dry_run)
+
+        # Check if we can do diff-based sync
+        diff_key = source.db_load.key if source.db_load else None
+        table_exists = self.adapter.table_exists(table_name)
+
+        if diff_key and table_exists and not drop_existing:
+            from anysite.dataset.differ import DatasetDiffer
+            differ = DatasetDiffer(self.base_path)
+            dates = differ.available_dates(source.id)
+
+            if len(dates) >= 2:
+                return self._diff_sync(
+                    source, table_name, diff_key, differ, dates, dry_run=dry_run
+                )
+
+        # Fallback: full INSERT of latest snapshot
+        latest = _get_latest_parquet(self.base_path, source.id)
+        if latest is None:
+            return 0
+        return self._full_insert(source, table_name, latest, dry_run=dry_run)
+
+    def _full_insert(
+        self,
+        source: DatasetSource,
+        table_name: str,
+        parquet_path: Path,
+        *,
+        dry_run: bool = False,
+    ) -> int:
+        """Full INSERT: read parquet, transform, create table if needed, insert all rows."""
+        raw_records = read_parquet(parquet_path)
         if not raw_records:
             return 0
-
-        table_name = _table_name_for(source)
 
         # Determine parent info for FK linking
         parent_source_id = None
@@ -174,7 +245,6 @@ class DatasetDbLoader:
         for record in raw_records:
             row = _filter_record(record, source)
 
-            # Add FK column if this is a dependent source
             if parent_source_id and parent_fk_col:
                 input_val = record.get("_input_value")
                 parent_map = self._value_to_id.get(parent_source_id, {})
@@ -189,17 +259,12 @@ class DatasetDbLoader:
             return len(rows)
 
         # Determine the lookup field for children to reference this source
-        # This is the field that child dependencies extract from this source
         lookup_field = self._get_child_lookup_field(source)
 
-        # Create table
-        if drop_existing and self.adapter.table_exists(table_name):
-            self.adapter.execute(f"DROP TABLE {table_name}")
-
+        # Create table if needed
         if not self.adapter.table_exists(table_name):
             schema = infer_table_schema(table_name, rows)
             sql_types = schema.to_sql_types(self._dialect)
-            # Add auto-increment id column
             col_defs = {"id": self._auto_id_type()}
             col_defs.update(sql_types)
             self.adapter.create_table(table_name, col_defs, primary_key="id")
@@ -208,10 +273,8 @@ class DatasetDbLoader:
         value_map: dict[str, int] = {}
         for i, row in enumerate(rows):
             self.adapter.insert_batch(table_name, [row])
-            # Get the last inserted id
             last_id = self._get_last_id(table_name)
 
-            # Build value→id map for child sources
             if lookup_field and last_id is not None:
                 raw_record = raw_records[i]
                 lookup_val = _extract_dot_value(raw_record, lookup_field)
@@ -224,6 +287,82 @@ class DatasetDbLoader:
             self._value_to_id[source.id] = value_map
 
         return len(rows)
+
+    def _diff_sync(
+        self,
+        source: DatasetSource,
+        table_name: str,
+        diff_key: str,
+        differ: Any,
+        dates: list[date],
+        *,
+        dry_run: bool = False,
+    ) -> int:
+        """Diff-based incremental sync: compare two most recent snapshots, apply delta."""
+        result = differ.diff(source.id, diff_key)
+        total = 0
+
+        if dry_run:
+            return len(result.added) + len(result.removed) + len(result.changed)
+
+        # Extract key value from a record (handles dot-notation)
+        def _get_key_val(record: dict[str, Any]) -> Any:
+            if "." in diff_key:
+                return _extract_dot_value(record, diff_key)
+            return record.get(diff_key)
+
+        # Determine the DB column name for the key
+        db_key_col = diff_key.replace(".", "_")
+
+        # INSERT added records
+        if result.added:
+            for record in result.added:
+                row = _filter_record(record, source)
+                self.adapter.insert_batch(table_name, [row])
+                total += 1
+
+        # DELETE removed records
+        if result.removed:
+            safe_col = sanitize_identifier(db_key_col)
+            for record in result.removed:
+                key_val = _get_key_val(record)
+                if key_val is not None:
+                    self.adapter.execute(
+                        f"DELETE FROM {table_name} WHERE {safe_col} = ?",
+                        (str(key_val),),
+                    )
+                    total += 1
+
+        # UPDATE changed records
+        if result.changed:
+            safe_col = sanitize_identifier(db_key_col)
+            for record in result.changed:
+                key_val = _get_key_val(record)
+                if key_val is None:
+                    continue
+                changed_fields = record.get("_changed_fields", [])
+                if not changed_fields:
+                    continue
+
+                # Build SET clause from changed fields
+                set_parts = []
+                params: list[Any] = []
+                for field_name in changed_fields:
+                    new_val = record.get(field_name)
+                    safe_field = sanitize_identifier(field_name)
+                    set_parts.append(f"{safe_field} = ?")
+                    params.append(new_val)
+
+                params.append(str(key_val))
+                sql = (
+                    f"UPDATE {table_name} "
+                    f"SET {', '.join(set_parts)} "
+                    f"WHERE {safe_col} = ?"
+                )
+                self.adapter.execute(sql, tuple(params))
+                total += 1
+
+        return total
 
     def _get_child_lookup_field(self, source: DatasetSource) -> str | None:
         """Find which field children use to reference this source."""

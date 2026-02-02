@@ -1,5 +1,6 @@
 """Tests for dataset differ."""
 
+import json
 from datetime import date
 
 import pytest
@@ -336,3 +337,147 @@ class TestFormatDiffRecords:
         assert rows[0]["name"] == "Alice Updated"
         assert rows[0]["name__old"] == "Alice"
         assert "_changed_fields" not in rows[0]
+
+
+class TestDotNotationKey:
+    def test_diff_with_json_key(self, tmp_path):
+        """Dot-notation key extracts values from JSON string fields."""
+        source_dir = tmp_path / "raw" / "items"
+        source_dir.mkdir(parents=True)
+        write_parquet(
+            [
+                {"urn": json.dumps({"type": "post", "value": "p1"}), "score": 10},
+                {"urn": json.dumps({"type": "post", "value": "p2"}), "score": 20},
+            ],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [
+                {"urn": json.dumps({"type": "post", "value": "p1"}), "score": 15},
+                {"urn": json.dumps({"type": "post", "value": "p2"}), "score": 20},
+                {"urn": json.dumps({"type": "post", "value": "p3"}), "score": 30},
+            ],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        differ = DatasetDiffer(tmp_path)
+        result = differ.diff("items", "urn.value")
+
+        assert len(result.added) == 1
+        assert result.added[0]["urn.value"] == "p3"
+
+        assert len(result.changed) == 1
+        assert result.changed[0]["urn.value"] == "p1"
+        assert "score" in result.changed[0]["_changed_fields"]
+
+        assert result.unchanged_count == 1
+
+    def test_dot_key_removed(self, tmp_path):
+        """Dot-notation key detects removed records."""
+        source_dir = tmp_path / "raw" / "items"
+        source_dir.mkdir(parents=True)
+        write_parquet(
+            [
+                {"meta": json.dumps({"id": "a"}), "name": "Alice"},
+                {"meta": json.dumps({"id": "b"}), "name": "Bob"},
+            ],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [{"meta": json.dumps({"id": "a"}), "name": "Alice"}],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        differ = DatasetDiffer(tmp_path)
+        result = differ.diff("items", "meta.id")
+        assert len(result.removed) == 1
+        assert result.removed[0]["meta.id"] == "b"
+
+    def test_dot_key_root_missing_error(self, tmp_path):
+        """Dot-notation with missing root column raises DatasetError."""
+        source_dir = tmp_path / "raw" / "items"
+        source_dir.mkdir(parents=True)
+        write_parquet([{"name": "Alice"}], source_dir / "2026-01-01.parquet")
+        write_parquet([{"name": "Bob"}], source_dir / "2026-01-02.parquet")
+
+        differ = DatasetDiffer(tmp_path)
+        with pytest.raises(DatasetError, match="Root field 'urn'"):
+            differ.diff("items", "urn.value")
+
+
+class TestOutputFieldFiltering:
+    def test_fields_filter_diff_output(self, tmp_path):
+        """When fields is set, output only contains those fields + key."""
+        source_dir = tmp_path / "raw" / "items"
+        source_dir.mkdir(parents=True)
+        write_parquet(
+            [{"urn": "a", "name": "Alice", "score": 10, "city": "SF"}],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [
+                {"urn": "a", "name": "Alice", "score": 20, "city": "NY"},
+                {"urn": "b", "name": "Bob", "score": 30, "city": "LA"},
+            ],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        differ = DatasetDiffer(tmp_path)
+        result = differ.diff("items", "urn", fields=["score"])
+
+        # Added record should only have urn + score
+        assert len(result.added) == 1
+        assert set(result.added[0].keys()) == {"urn", "score"}
+
+        # Changed record should have urn + score + score__old + _changed_fields
+        assert len(result.changed) == 1
+        assert "city" not in result.changed[0]
+        assert "score" in result.changed[0]
+        assert "score__old" in result.changed[0]
+
+    def test_format_diff_table_with_output_fields(self):
+        """format_diff_table filters to output_fields."""
+        result = DiffResult(
+            source_id="items",
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 2),
+            key="urn",
+            added=[{"urn": "b", "name": "Bob", "score": 30}],
+            changed=[{
+                "urn": "a",
+                "name": "Alice",
+                "score": 20,
+                "score__old": 10,
+                "_changed_fields": ["score"],
+            }],
+        )
+
+        rows = format_diff_table(result, output_fields=["score"])
+        for row in rows:
+            assert "name" not in row
+            assert "urn" in row  # key always included
+
+    def test_format_diff_records_with_output_fields(self):
+        """format_diff_records filters to output_fields + __old."""
+        result = DiffResult(
+            source_id="items",
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 2),
+            key="urn",
+            changed=[{
+                "urn": "a",
+                "name": "Alice Updated",
+                "name__old": "Alice",
+                "score": 20,
+                "score__old": 10,
+                "_changed_fields": ["name", "score"],
+            }],
+        )
+
+        rows = format_diff_records(result, output_fields=["score"])
+        assert len(rows) == 1
+        assert "score" in rows[0]
+        assert "score__old" in rows[0]
+        assert "name" not in rows[0]
+        assert "name__old" not in rows[0]
+        assert "urn" in rows[0]  # key always included

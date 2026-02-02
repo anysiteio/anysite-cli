@@ -344,3 +344,295 @@ class TestEmptySource:
             loader = DatasetDbLoader(config, adapter)
             results = loader.load_all()
             assert results["empty"] == 0
+
+
+class TestDiffBasedSync:
+    """Test diff-based incremental sync when db_load.key is configured."""
+
+    def _setup_two_snapshots(self, tmp_path, source_id, old_records, new_records):
+        """Write two parquet snapshots for a source."""
+        source_dir = get_source_dir(tmp_path / "data", source_id)
+        write_parquet(old_records, source_dir / "2026-01-01.parquet")
+        write_parquet(new_records, source_dir / "2026-01-02.parquet")
+
+    def test_inserts_added_records(self, tmp_path):
+        """New records in the latest snapshot are INSERTed."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90}],
+            new_records=[
+                {"name": "Alice", "score": 90},
+                {"name": "Bob", "score": 80},
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # First load: full insert of latest (table doesn't exist yet)
+            loader = DatasetDbLoader(config, adapter)
+            results = loader.load_all()
+            assert results["items"] == 2
+
+            # Simulate: drop and reload just the old snapshot to set up DB state
+            adapter.execute("DROP TABLE items")
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader2 = DatasetDbLoader(config, adapter)
+            loader2._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 1
+            assert rows[0]["name"] == "Alice"
+
+            # Now diff-based sync should INSERT Bob
+            loader3 = DatasetDbLoader(config, adapter)
+            results = loader3.load_all()
+            assert results["items"] == 1  # 1 added
+
+            rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
+            assert len(rows) == 2
+            assert rows[1]["name"] == "Bob"
+
+    def test_deletes_removed_records(self, tmp_path):
+        """Records missing from the latest snapshot are DELETEd."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[
+                {"name": "Alice", "score": 90},
+                {"name": "Bob", "score": 80},
+            ],
+            new_records=[{"name": "Alice", "score": 90}],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Set up DB with both records
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 2
+
+            # Diff-based sync should DELETE Bob
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"] == 1  # 1 removed
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 1
+            assert rows[0]["name"] == "Alice"
+
+    def test_updates_changed_records(self, tmp_path):
+        """Records with changed values are UPDATEd."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90}],
+            new_records=[{"name": "Alice", "score": 95}],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Set up DB with old data
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["score"] == 90
+
+            # Diff-based sync should UPDATE score
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"] == 1  # 1 changed
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 1
+            assert rows[0]["score"] == 95
+
+    def test_combined_add_remove_update(self, tmp_path):
+        """Test all three operations in a single sync."""
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[
+                {"name": "Alice", "score": 90},
+                {"name": "Bob", "score": 80},
+            ],
+            new_records=[
+                {"name": "Alice", "score": 95},   # changed
+                {"name": "Carol", "score": 70},    # added
+                # Bob removed
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Set up DB with old data
+            source_dir = get_source_dir(tmp_path / "data", "items")
+            loader = DatasetDbLoader(config, adapter)
+            loader._full_insert(
+                sources[0], "items", source_dir / "2026-01-01.parquet"
+            )
+
+            # Diff-based sync
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"] == 3  # 1 added + 1 removed + 1 changed
+
+            rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
+            assert len(rows) == 2
+            names = [r["name"] for r in rows]
+            assert "Alice" in names
+            assert "Carol" in names
+            assert "Bob" not in names
+            alice = [r for r in rows if r["name"] == "Alice"][0]
+            assert alice["score"] == 95
+
+    def test_no_key_falls_back_to_full_insert(self, tmp_path):
+        """Without db_load.key, load-db does full INSERT of latest snapshot."""
+        sources = [
+            DatasetSource(id="items", endpoint="/api/items"),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        self._setup_two_snapshots(
+            tmp_path, "items",
+            old_records=[{"name": "Alice", "score": 90}],
+            new_records=[
+                {"name": "Alice", "score": 95},
+                {"name": "Bob", "score": 80},
+            ],
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # First load creates table with latest snapshot
+            loader = DatasetDbLoader(config, adapter)
+            results = loader.load_all()
+            assert results["items"] == 2
+
+            # Second load without key: full insert again (no diff)
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all()
+            assert results["items"] == 2
+            # Without drop_existing, rows accumulate
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 4
+
+
+class TestSnapshotLoading:
+    """Test --snapshot flag for loading a specific date."""
+
+    def test_load_specific_snapshot(self, tmp_path):
+        sources = [
+            DatasetSource(id="items", endpoint="/api/items"),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [{"name": "Alice", "score": 90}],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [{"name": "Alice", "score": 95}, {"name": "Bob", "score": 80}],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Load the older snapshot specifically
+            loader = DatasetDbLoader(config, adapter)
+            results = loader.load_all(snapshot="2026-01-01")
+            assert results["items"] == 1
+
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert len(rows) == 1
+            assert rows[0]["name"] == "Alice"
+            assert rows[0]["score"] == 90
+
+    def test_snapshot_not_found(self, tmp_path):
+        sources = [DatasetSource(id="items", endpoint="/api/items")]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet([{"name": "A"}], source_dir / "2026-01-01.parquet")
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            results = loader.load_all(snapshot="2026-12-31")
+            assert results["items"] == 0
+
+
+class TestDropExistingWithDiffKey:
+    """Test --drop-existing forces full insert even with db_load.key."""
+
+    def test_drop_existing_ignores_diff(self, tmp_path):
+        sources = [
+            DatasetSource(
+                id="items", endpoint="/api/items",
+                db_load=DbLoadConfig(key="name"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [{"name": "Alice", "score": 90}],
+            source_dir / "2026-01-01.parquet",
+        )
+        write_parquet(
+            [{"name": "Alice", "score": 95}, {"name": "Bob", "score": 80}],
+            source_dir / "2026-01-02.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            # Initial load
+            loader = DatasetDbLoader(config, adapter)
+            loader.load_all()
+
+            # Drop and reload — should full insert latest, not diff
+            loader2 = DatasetDbLoader(config, adapter)
+            results = loader2.load_all(drop_existing=True)
+            assert results["items"] == 2
+
+            rows = adapter.fetch_all("SELECT * FROM items ORDER BY name")
+            assert len(rows) == 2
+            assert rows[0]["name"] == "Alice"
+            assert rows[0]["score"] == 95

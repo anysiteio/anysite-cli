@@ -81,6 +81,7 @@ class DbLoadConfig(BaseModel):
     """Configuration for loading a source into a relational database."""
 
     table: str | None = Field(default=None, description="Override table name (default: source id)")
+    key: str | None = Field(default=None, description="Unique key field for diff-based DB sync (e.g., urn.value)")
     fields: list[str] = Field(default_factory=list, description="Fields to include (empty = all)")
     exclude: list[str] = Field(
         default_factory=lambda: ["_input_value", "_parent_source"],
