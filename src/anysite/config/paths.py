@@ -8,8 +8,13 @@ def get_config_dir() -> Path:
     """Get the configuration directory path.
 
     Returns:
-        Path to ~/.anysite/ on Unix or %APPDATA%/anysite/ on Windows.
+        Path from ANYSITE_CONFIG_DIR env var if set,
+        otherwise ~/.anysite/ on Unix or %APPDATA%/anysite/ on Windows.
     """
+    # Allow override via environment variable (useful for multi-tenant setups)
+    if custom_dir := os.environ.get("ANYSITE_CONFIG_DIR"):
+        return Path(custom_dir)
+
     if os.name == "nt":  # Windows
         base = Path(os.environ.get("APPDATA", str(Path.home())))
         return base / "anysite"
