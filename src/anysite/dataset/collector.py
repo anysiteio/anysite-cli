@@ -46,16 +46,18 @@ class CollectionPlan:
         refresh: str = "auto",
         llm_steps: int = 0,
     ) -> None:
-        self.steps.append({
-            "source": source_id,
-            "endpoint": endpoint,
-            "kind": kind,
-            "params": params or {},
-            "dependency": dependency,
-            "estimated_requests": estimated_requests,
-            "refresh": refresh,
-            "llm_steps": llm_steps,
-        })
+        self.steps.append(
+            {
+                "source": source_id,
+                "endpoint": endpoint,
+                "kind": kind,
+                "params": params or {},
+                "dependency": dependency,
+                "estimated_requests": estimated_requests,
+                "refresh": refresh,
+                "llm_steps": llm_steps,
+            }
+        )
 
 
 async def collect_dataset(
@@ -97,7 +99,11 @@ async def collect_dataset(
 
     if dry_run:
         plan = _build_plan(
-            ordered, base_path, metadata, incremental, today,
+            ordered,
+            base_path,
+            metadata,
+            incremental,
+            today,
             config_dir=config_dir,
         )
         return _print_plan(plan)
@@ -133,22 +139,35 @@ async def collect_dataset(
                     continue
 
             if not quiet:
-                print_info(f"Collecting {source.id} from {source.endpoint}...")
+                if source.type == "union":
+                    print_info(
+                        f"Collecting {source.id} (union of {', '.join(source.sources or [])})..."
+                    )
+                else:
+                    print_info(f"Collecting {source.id} from {source.endpoint}...")
 
-            if source.type == "llm":
+            if source.type == "union":
+                records = await _collect_union(source, base_path, quiet=quiet)
+            elif source.type == "llm":
                 records = await _collect_llm(source, base_path, quiet=quiet)
             elif source.from_file is not None:
                 file_base = config_dir if config_dir else Path.cwd()
                 records = await _collect_from_file(
-                    source, config_dir=file_base,
-                    metadata=metadata, incremental=incremental, quiet=quiet,
+                    source,
+                    config_dir=file_base,
+                    metadata=metadata,
+                    incremental=incremental,
+                    quiet=quiet,
                 )
             elif source.dependency is None:
                 records = await _collect_independent(source)
             else:
                 records = await _collect_dependent(
-                    source, base_path,
-                    metadata=metadata, incremental=incremental, quiet=quiet,
+                    source,
+                    base_path,
+                    metadata=metadata,
+                    incremental=incremental,
+                    quiet=quiet,
                 )
 
             # LLM enrichment (after collection, before Parquet write)
@@ -183,9 +202,7 @@ async def collect_dataset(
 
             # Track collected inputs for incremental dedup
             if records:
-                input_values = [
-                    r["_input_value"] for r in records if "_input_value" in r
-                ]
+                input_values = [r["_input_value"] for r in records if "_input_value" in r]
                 if input_values:
                     metadata.update_collected_inputs(source.id, input_values)
 
@@ -223,7 +240,10 @@ async def collect_dataset(
                     await notifier.notify_failure(config.name, error_msg, duration)
                 else:
                     await notifier.notify_complete(
-                        config.name, total_records, len(results), duration,
+                        config.name,
+                        total_records,
+                        len(results),
+                        duration,
                     )
             except Exception as ne:
                 logger.error("Notification error: %s", ne)
@@ -419,6 +439,59 @@ def _flatten_results(results: list[Any]) -> list[dict[str, Any]]:
     return all_records
 
 
+async def _collect_union(
+    source: DatasetSource,
+    base_path: Path,
+    *,
+    quiet: bool = False,
+) -> list[dict[str, Any]]:
+    """Collect by combining records from multiple parent sources."""
+    if not source.sources:
+        raise DatasetError(f"Union source {source.id} has no sources defined")
+
+    all_records: list[dict[str, Any]] = []
+
+    for parent_id in source.sources:
+        parent_dir = base_path / "raw" / parent_id
+        records = read_latest_parquet(parent_dir)
+
+        if records:
+            # Add provenance metadata
+            for record in records:
+                record["_union_source"] = parent_id
+            all_records.extend(records)
+            if not quiet:
+                print_info(f"  Loaded {len(records)} from {parent_id}")
+        elif not quiet:
+            print_warning(f"  No data for {parent_id}")
+
+    # Deduplicate if dedupe_by is set
+    if source.dedupe_by and all_records:
+        all_records = _dedupe_records(all_records, source.dedupe_by)
+        if not quiet:
+            print_info(f"  After dedup: {len(all_records)} records")
+
+    return all_records
+
+
+def _dedupe_records(records: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    """Deduplicate records by field value."""
+    segments = parse_field_path(field)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+
+    for record in records:
+        parsed = {k: _try_parse_json(v) for k, v in record.items()}
+        value = extract_field(parsed, segments)
+        key = str(value) if value is not None else ""
+
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(record)
+
+    return unique
+
+
 async def _collect_llm(
     source: DatasetSource,
     base_path: Path,
@@ -481,9 +554,7 @@ async def _collect_dependent(
         return []
 
     if not source.input_key:
-        raise DatasetError(
-            f"Source {source.id} has a dependency but no input_key defined"
-        )
+        raise DatasetError(f"Source {source.id} has a dependency but no input_key defined")
 
     # Filter already-collected inputs in incremental mode (refresh: always bypasses)
     if incremental and source.refresh != "always" and metadata:
@@ -499,9 +570,7 @@ async def _collect_dependent(
             print_info(f"  All inputs already collected for {source.id}")
         return []
 
-    return await _collect_batch(
-        source, values, parent_source=dep.from_source, quiet=quiet
-    )
+    return await _collect_batch(source, values, parent_source=dep.from_source, quiet=quiet)
 
 
 def _apply_template(template: dict[str, Any], value: Any) -> dict[str, Any]:
@@ -612,8 +681,12 @@ def _filter_sources(
             continue
         required.add(sid)
         src = config.get_source(sid)
-        if src and src.dependency:
-            stack.append(src.dependency.from_source)
+        if src:
+            if src.dependency:
+                stack.append(src.dependency.from_source)
+            # Also include union parent sources
+            if src.type == "union" and src.sources:
+                stack.extend(src.sources)
 
     return [s for s in ordered if s.id in required]
 
@@ -638,7 +711,23 @@ def _build_plan(
 
         llm_steps = len(source.llm) if source.llm else 0
 
-        if source.type == "llm":
+        if source.type == "union":
+            # Union source: reads and combines multiple parents, no API calls
+            total = 0
+            for parent_id in source.sources or []:
+                parent_dir = base_path / "raw" / parent_id
+                parent_records = read_latest_parquet(parent_dir)
+                total += len(parent_records) if parent_records else 0
+            plan.add_step(
+                source_id=source.id,
+                endpoint=None,
+                kind="union",
+                dependency=",".join(source.sources or []),
+                estimated_requests=total,
+                refresh=source.refresh,
+                llm_steps=llm_steps,
+            )
+        elif source.type == "llm":
             # LLM-only source: reads parent data, no API calls
             est = _count_dependent_inputs(source, base_path, metadata)
             plan.add_step(
@@ -702,9 +791,7 @@ def _count_dependent_inputs(
     return len(values)
 
 
-def _count_file_inputs(
-    source: DatasetSource, config_dir: Path | None
-) -> int | None:
+def _count_file_inputs(source: DatasetSource, config_dir: Path | None) -> int | None:
     """Count input values in a from_file source."""
     if not source.from_file:
         return None

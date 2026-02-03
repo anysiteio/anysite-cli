@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from anysite.dataset.collector import (
+    _collect_union,
+    _dedupe_records,
     _extract_values,
     _filter_sources,
     collect_dataset,
@@ -853,3 +855,264 @@ class TestLLMSourceType:
         assert llm_step["endpoint"] is None
         assert llm_step["dependency"] == "profiles"
         assert llm_step["llm_steps"] == 1
+
+
+class TestUnionSourceType:
+    """Tests for type='union' sources that combine records from multiple parents."""
+
+    @pytest.mark.asyncio
+    async def test_collect_union_combines_records(self, tmp_path):
+        """Union source combines records from multiple parent sources."""
+        # Create parent data
+        search_a_dir = tmp_path / "data" / "raw" / "search_a"
+        search_a_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice", "urn": "u1"}],
+            search_a_dir / "2026-01-15.parquet",
+        )
+
+        search_b_dir = tmp_path / "data" / "raw" / "search_b"
+        search_b_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Bob", "urn": "u2"}],
+            search_b_dir / "2026-01-15.parquet",
+        )
+
+        source = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["search_a", "search_b"],
+        )
+
+        records = await _collect_union(source, tmp_path / "data", quiet=True)
+
+        assert len(records) == 2
+        names = {r["name"] for r in records}
+        assert names == {"Alice", "Bob"}
+        # Check provenance metadata
+        assert all("_union_source" in r for r in records)
+        union_sources = {r["_union_source"] for r in records}
+        assert union_sources == {"search_a", "search_b"}
+
+    @pytest.mark.asyncio
+    async def test_collect_union_with_dedupe(self, tmp_path):
+        """Union source with dedupe_by removes duplicates."""
+        # Create parent data with overlapping urns
+        search_a_dir = tmp_path / "data" / "raw" / "search_a"
+        search_a_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice", "urn": "u1"}, {"name": "Charlie", "urn": "u3"}],
+            search_a_dir / "2026-01-15.parquet",
+        )
+
+        search_b_dir = tmp_path / "data" / "raw" / "search_b"
+        search_b_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice2", "urn": "u1"}, {"name": "Bob", "urn": "u2"}],
+            search_b_dir / "2026-01-15.parquet",
+        )
+
+        source = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["search_a", "search_b"],
+            dedupe_by="urn",
+        )
+
+        records = await _collect_union(source, tmp_path / "data", quiet=True)
+
+        assert len(records) == 3  # u1, u2, u3 (deduplicated)
+        urns = {r["urn"] for r in records}
+        assert urns == {"u1", "u2", "u3"}
+        # First occurrence of u1 should be kept (Alice from search_a)
+        u1_record = next(r for r in records if r["urn"] == "u1")
+        assert u1_record["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_collect_union_empty_parent(self, tmp_path):
+        """Union source handles missing parent data gracefully."""
+        # Only create data for one parent
+        search_a_dir = tmp_path / "data" / "raw" / "search_a"
+        search_a_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice", "urn": "u1"}],
+            search_a_dir / "2026-01-15.parquet",
+        )
+
+        # search_b has no data
+
+        source = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["search_a", "search_b"],
+        )
+
+        records = await _collect_union(source, tmp_path / "data", quiet=True)
+
+        assert len(records) == 1
+        assert records[0]["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_collect_union_nested_dedupe_field(self, tmp_path):
+        """Union source can dedupe by nested field."""
+        import json
+
+        # Create parent data with nested urn objects
+        search_a_dir = tmp_path / "data" / "raw" / "search_a"
+        search_a_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice", "urn": json.dumps({"value": "u1"})}],
+            search_a_dir / "2026-01-15.parquet",
+        )
+
+        search_b_dir = tmp_path / "data" / "raw" / "search_b"
+        search_b_dir.mkdir(parents=True)
+        write_parquet(
+            [
+                {"name": "Alice2", "urn": json.dumps({"value": "u1"})},
+                {"name": "Bob", "urn": json.dumps({"value": "u2"})},
+            ],
+            search_b_dir / "2026-01-15.parquet",
+        )
+
+        source = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["search_a", "search_b"],
+            dedupe_by="urn.value",
+        )
+
+        records = await _collect_union(source, tmp_path / "data", quiet=True)
+
+        assert len(records) == 2  # u1 and u2
+
+
+class TestDedupeRecords:
+    """Tests for _dedupe_records helper."""
+
+    def test_dedupe_simple_field(self):
+        """Dedupe by simple string field."""
+        records = [
+            {"name": "Alice", "urn": "u1"},
+            {"name": "Bob", "urn": "u2"},
+            {"name": "Alice2", "urn": "u1"},  # duplicate
+        ]
+        result = _dedupe_records(records, "urn")
+        assert len(result) == 2
+        urns = [r["urn"] for r in result]
+        assert urns == ["u1", "u2"]
+
+    def test_dedupe_preserves_order(self):
+        """Dedupe preserves first occurrence."""
+        records = [
+            {"name": "First", "id": "1"},
+            {"name": "Second", "id": "2"},
+            {"name": "FirstDupe", "id": "1"},
+            {"name": "Third", "id": "3"},
+        ]
+        result = _dedupe_records(records, "id")
+        assert len(result) == 3
+        assert result[0]["name"] == "First"
+        assert result[1]["name"] == "Second"
+        assert result[2]["name"] == "Third"
+
+
+class TestUnionDryRun:
+    """Tests for union source in dry-run plan."""
+
+    @pytest.mark.asyncio
+    async def test_union_dry_run_plan(self, tmp_path):
+        """Dry run shows union source with correct kind and dependencies."""
+        from anysite.dataset.collector import _build_plan
+        from anysite.dataset.storage import MetadataStore
+
+        # Create parent data
+        search_a_dir = tmp_path / "data" / "raw" / "search_a"
+        search_a_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice"}, {"name": "Bob"}],
+            search_a_dir / "2026-01-15.parquet",
+        )
+
+        search_b_dir = tmp_path / "data" / "raw" / "search_b"
+        search_b_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Charlie"}],
+            search_b_dir / "2026-01-15.parquet",
+        )
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        metadata = MetadataStore(tmp_path / "data")
+        plan = _build_plan(
+            config.topological_sort(), tmp_path / "data",
+            metadata, False, date.today(),
+        )
+
+        union_step = [s for s in plan.steps if s["source"] == "combined"][0]
+        assert union_step["kind"] == "union"
+        assert union_step["endpoint"] is None
+        assert union_step["dependency"] == "search_a,search_b"
+        assert union_step["estimated_requests"] == 3  # 2 + 1 records
+
+
+class TestFilterSourcesWithUnion:
+    """Tests for _filter_sources with union sources."""
+
+    def test_filter_union_includes_parents(self):
+        """Filtering by union source includes all parent sources."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+                DatasetSource(id="unrelated", endpoint="/api/other"),
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+            ],
+        )
+        ordered = config.topological_sort()
+        filtered = _filter_sources(ordered, "combined", config)
+        ids = {s.id for s in filtered}
+        assert ids == {"search_a", "search_b", "combined"}
+        assert "unrelated" not in ids
+
+    def test_filter_dependent_of_union_includes_all(self):
+        """Filtering by source that depends on union includes union and its parents."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+                DatasetSource(
+                    id="profiles",
+                    endpoint="/api/profiles",
+                    dependency=SourceDependency(from_source="combined", field="urn"),
+                    input_key="user",
+                ),
+            ],
+        )
+        ordered = config.topological_sort()
+        filtered = _filter_sources(ordered, "profiles", config)
+        ids = {s.id for s in filtered}
+        assert ids == {"search_a", "search_b", "combined", "profiles"}

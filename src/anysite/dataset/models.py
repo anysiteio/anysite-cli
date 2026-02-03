@@ -19,7 +19,9 @@ from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
 class TransformConfig(BaseModel):
     """Per-source transform: filter → select fields → add columns."""
 
-    filter: str | None = Field(default=None, description="Filter expression (e.g., '.employee_count > 10')")
+    filter: str | None = Field(
+        default=None, description="Filter expression (e.g., '.employee_count > 10')"
+    )
     fields: list[str] = Field(default_factory=list, description="Fields to keep (empty = all)")
     add_columns: dict[str, Any] = Field(default_factory=dict, description="Static columns to add")
 
@@ -81,7 +83,9 @@ class DbLoadConfig(BaseModel):
     """Configuration for loading a source into a relational database."""
 
     table: str | None = Field(default=None, description="Override table name (default: source id)")
-    key: str | None = Field(default=None, description="Unique key field for diff-based DB sync (e.g., urn.value)")
+    key: str | None = Field(
+        default=None, description="Unique key field for diff-based DB sync (e.g., urn.value)"
+    )
     sync: Literal["full", "append"] = Field(
         default="full",
         description="Sync mode: 'full' applies INSERT/DELETE/UPDATE, 'append' skips DELETE (keeps old records)",
@@ -127,7 +131,9 @@ class LLMStepConfig(BaseModel):
     )
     temperature: float | None = Field(default=None, description="LLM temperature override")
     max_tokens: int | None = Field(default=None, description="Max response tokens override")
-    provider: str | None = Field(default=None, description="LLM provider override (openai or anthropic)")
+    provider: str | None = Field(
+        default=None, description="LLM provider override (openai or anthropic)"
+    )
     model: str | None = Field(default=None, description="Model ID override")
 
     @model_validator(mode="after")
@@ -143,9 +149,17 @@ class DatasetSource(BaseModel):
     """A single data source within a dataset."""
 
     id: str = Field(description="Unique source identifier")
-    type: Literal["api", "llm"] = Field(
+    type: Literal["api", "llm", "union"] = Field(
         default="api",
-        description="Source type: 'api' for API collection, 'llm' for LLM-only processing of parent data",
+        description="Source type: 'api' for API collection, 'llm' for LLM-only processing, 'union' for combining sources",
+    )
+    sources: list[str] | None = Field(
+        default=None,
+        description="Source IDs to union (for type='union' only)",
+    )
+    dedupe_by: str | None = Field(
+        default=None,
+        description="Field path for deduplication in union (dot-notation)",
     )
     endpoint: str | None = Field(
         default=None,
@@ -217,6 +231,19 @@ class DatasetSource(BaseModel):
                 raise ValueError("LLM source cannot have from_file")
             if self.input_key is not None:
                 raise ValueError("LLM source cannot have input_key")
+        elif self.type == "union":
+            if not self.sources:
+                raise ValueError("Union source must have non-empty 'sources' list")
+            if self.endpoint is not None:
+                raise ValueError("Union source cannot have endpoint")
+            if self.dependency is not None:
+                raise ValueError("Union source cannot have dependency")
+            if self.from_file is not None:
+                raise ValueError("Union source cannot have from_file")
+            if self.input_key is not None:
+                raise ValueError("Union source cannot have input_key")
+            if self.params:
+                raise ValueError("Union source cannot have params")
         else:  # type == "api"
             if self.endpoint is None:
                 raise ValueError("API source requires endpoint")
@@ -242,7 +269,9 @@ class DatasetConfig(BaseModel):
     sources: list[DatasetSource] = Field(description="Data sources to collect")
     storage: StorageConfig = Field(default_factory=StorageConfig)
     schedule: ScheduleConfig | None = Field(default=None, description="Collection schedule")
-    notifications: NotificationsConfig | None = Field(default=None, description="Webhook notifications")
+    notifications: NotificationsConfig | None = Field(
+        default=None, description="Webhook notifications"
+    )
 
     _config_dir: Path | None = PrivateAttr(default=None)
 
@@ -254,6 +283,25 @@ class DatasetConfig(BaseModel):
         if dupes:
             raise ValueError(f"Duplicate source IDs: {set(dupes)}")
         return v
+
+    @model_validator(mode="after")
+    def validate_union_sources(self) -> DatasetConfig:
+        """Validate that union sources reference sources with same endpoint."""
+        source_map = {s.id: s for s in self.sources}
+        for source in self.sources:
+            if source.type == "union" and source.sources:
+                endpoints: set[str] = set()
+                for src_id in source.sources:
+                    if src_id not in source_map:
+                        raise SourceNotFoundError(src_id, source.id)
+                    parent = source_map[src_id]
+                    if parent.endpoint:
+                        endpoints.add(parent.endpoint)
+                if len(endpoints) > 1:
+                    raise ValueError(
+                        f"Union source '{source.id}' references sources with different endpoints: {endpoints}"
+                    )
+        return self
 
     @classmethod
     def from_yaml(cls, path: Path) -> DatasetConfig:
@@ -294,6 +342,13 @@ class DatasetConfig(BaseModel):
                     raise SourceNotFoundError(parent_id, source.id)
                 in_degree[source.id] += 1
                 dependents[parent_id].append(source.id)
+            # Handle union sources - depend on all listed sources
+            if source.type == "union" and source.sources:
+                for parent_id in source.sources:
+                    if parent_id not in source_map:
+                        raise SourceNotFoundError(parent_id, source.id)
+                    in_degree[source.id] += 1
+                    dependents[parent_id].append(source.id)
 
         # Kahn's algorithm
         queue: deque[str] = deque()

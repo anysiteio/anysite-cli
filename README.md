@@ -182,6 +182,29 @@ Edit `my-dataset/dataset.yaml` to define sources:
 ```yaml
 name: my-dataset
 sources:
+  # Search sources (can be combined with union)
+  - id: search_cto
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "CTO fintech", count: 50 }
+
+  - id: search_vp
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "VP Engineering", count: 50 }
+
+  # Union combines multiple sources (must have same endpoint)
+  - id: all_candidates
+    type: union
+    sources: [search_cto, search_vp]
+    dedupe_by: urn.value                  # Optional: remove duplicates by field
+
+  # Dependent source using union as parent
+  - id: profiles
+    endpoint: /api/linkedin/user
+    dependency:
+      from_source: all_candidates
+      field: urn.value
+    input_key: user
+
   - id: companies
     endpoint: /api/linkedin/company
     from_file: companies.txt

@@ -291,6 +291,182 @@ class TestTopologicalSort:
         with pytest.raises(SourceNotFoundError):
             config.topological_sort()
 
+    def test_union_dependency_order(self):
+        """Union source comes after all its parent sources."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+            ],
+        )
+        ordered = config.topological_sort()
+        ids = [s.id for s in ordered]
+        assert ids.index("search_a") < ids.index("combined")
+        assert ids.index("search_b") < ids.index("combined")
+
+    def test_union_missing_source_raises(self):
+        """Union referencing non-existent source raises error at config creation."""
+        with pytest.raises(SourceNotFoundError):
+            DatasetConfig(
+                name="test",
+                sources=[
+                    DatasetSource(id="a", endpoint="/api/a"),
+                    DatasetSource(
+                        id="combined",
+                        type="union",
+                        sources=["a", "nonexistent"],
+                    ),
+                ],
+            )
+
+    def test_union_with_downstream_dependent(self):
+        """Dependent source can reference union as parent."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+                DatasetSource(
+                    id="profiles",
+                    endpoint="/api/profiles",
+                    dependency=SourceDependency(from_source="combined", field="urn"),
+                    input_key="user",
+                ),
+            ],
+        )
+        ordered = config.topological_sort()
+        ids = [s.id for s in ordered]
+        assert ids.index("combined") < ids.index("profiles")
+
+    def test_union_different_endpoints_raises(self):
+        """Union sources must reference sources with same endpoint."""
+        with pytest.raises(ValueError, match="different endpoints"):
+            DatasetConfig(
+                name="test",
+                sources=[
+                    DatasetSource(id="users", endpoint="/api/users"),
+                    DatasetSource(id="companies", endpoint="/api/companies"),
+                    DatasetSource(
+                        id="combined",
+                        type="union",
+                        sources=["users", "companies"],
+                    ),
+                ],
+            )
+
+    def test_union_same_endpoint_valid(self):
+        """Union sources with same endpoint are valid."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="search_a", endpoint="/api/search"),
+                DatasetSource(id="search_b", endpoint="/api/search"),
+                DatasetSource(
+                    id="combined",
+                    type="union",
+                    sources=["search_a", "search_b"],
+                ),
+            ],
+        )
+        assert config is not None
+        ordered = config.topological_sort()
+        assert len(ordered) == 3
+
+
+class TestUnionSourceType:
+    """Tests for type='union' sources."""
+
+    def test_union_source_valid(self):
+        """Union source with sources list is valid."""
+        src = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["search_a", "search_b"],
+        )
+        assert src.type == "union"
+        assert src.sources == ["search_a", "search_b"]
+
+    def test_union_source_requires_sources(self):
+        """Union source without sources raises error."""
+        with pytest.raises(ValueError, match="must have non-empty 'sources'"):
+            DatasetSource(id="combined", type="union")
+
+    def test_union_source_empty_sources_raises(self):
+        """Union source with empty sources list raises error."""
+        with pytest.raises(ValueError, match="must have non-empty 'sources'"):
+            DatasetSource(id="combined", type="union", sources=[])
+
+    def test_union_source_cannot_have_endpoint(self):
+        """Union source with endpoint raises error."""
+        with pytest.raises(ValueError, match="cannot have endpoint"):
+            DatasetSource(
+                id="combined",
+                type="union",
+                endpoint="/api/test",
+                sources=["a", "b"],
+            )
+
+    def test_union_source_cannot_have_dependency(self):
+        """Union source with dependency raises error."""
+        with pytest.raises(ValueError, match="cannot have dependency"):
+            DatasetSource(
+                id="combined",
+                type="union",
+                sources=["a", "b"],
+                dependency=SourceDependency(from_source="x", field="y"),
+            )
+
+    def test_union_source_cannot_have_from_file(self):
+        """Union source with from_file raises error."""
+        with pytest.raises(ValueError, match="cannot have from_file"):
+            DatasetSource(
+                id="combined",
+                type="union",
+                sources=["a", "b"],
+                from_file="./data.txt",
+            )
+
+    def test_union_source_cannot_have_input_key(self):
+        """Union source with input_key raises error."""
+        with pytest.raises(ValueError, match="cannot have input_key"):
+            DatasetSource(
+                id="combined",
+                type="union",
+                sources=["a", "b"],
+                input_key="user",
+            )
+
+    def test_union_source_cannot_have_params(self):
+        """Union source with params raises error."""
+        with pytest.raises(ValueError, match="cannot have params"):
+            DatasetSource(
+                id="combined",
+                type="union",
+                sources=["a", "b"],
+                params={"count": 10},
+            )
+
+    def test_union_with_dedupe_by(self):
+        """Union source with dedupe_by is valid."""
+        src = DatasetSource(
+            id="combined",
+            type="union",
+            sources=["a", "b"],
+            dedupe_by="urn.value",
+        )
+        assert src.dedupe_by == "urn.value"
+
 
 class TestStoragePath:
     def test_relative_to_yaml(self, tmp_path):

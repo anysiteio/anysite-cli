@@ -85,6 +85,27 @@ anysite db query mydb --sql "SELECT * FROM users LIMIT 10" --format table
 anysite db upsert mydb --table users --conflict-columns id --stdin
 ```
 
+## Release Process
+
+When releasing a new version:
+
+1. **Update version in TWO places:**
+   - `pyproject.toml` — `version = "X.Y.Z"`
+   - `src/anysite/__init__.py` — `__version__ = "X.Y.Z"`
+
+2. **Build and publish:**
+   ```bash
+   rm -rf dist/ && python -m build
+   TWINE_USERNAME=__token__ TWINE_PASSWORD='<pypi-token>' python -m twine upload dist/*
+   ```
+
+3. **Commit and push:**
+   ```bash
+   git add pyproject.toml src/anysite/__init__.py
+   git commit -m "Bump version to X.Y.Z"
+   git push origin main
+   ```
+
 ## Architecture
 
 **CLI Framework**: Typer with Rich for terminal output.
@@ -111,7 +132,7 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 - `dataset/__init__.py` - `check_data_deps()` — verifies optional duckdb/pyarrow are installed
 - `dataset/models.py` - Pydantic models for dataset YAML config (`DatasetConfig`, `DatasetSource`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`), topological sort (Kahn's algorithm)
 - `dataset/storage.py` - Parquet read/write via pyarrow, directory layout (`raw/<source_id>/<date>.parquet`), `MetadataStore` for `metadata.json`
-- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, three source types (independent, from_file, dependent), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
+- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, four source types (independent, from_file, dependent, union), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
 - `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records
 - `dataset/analyzer.py` - DuckDB analytics: SQL query, column stats, profile, interactive shell. Registers views over Parquet files
 - `dataset/transformer.py` - `RecordTransformer`: safe filter parser (no `eval()`), field selection with dot-notation/aliases, static column injection. Filter syntax: `.field > 10`, `.status == "active"`, `and`/`or`
@@ -158,10 +179,11 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 
 **Dataset Subsystem** (`anysite dataset`): Multi-source data collection, Parquet storage, DuckDB analytics, relational DB loading, per-source transforms/exports, run history, scheduling, and webhook notifications. Optional — requires `pip install anysite-cli[data]`. Registered in `main.py` via try/except ImportError.
 
-**Dataset YAML Config**: Declarative multi-source pipelines. Three source types:
+**Dataset YAML Config**: Declarative multi-source pipelines. Four source types:
 - **Independent** — single API call with `params`
 - **from_file** — batch API calls with input values from CSV/JSONL/text file (`from_file` + `file_field` + `input_key`)
 - **Dependent** — batch API calls using values extracted from a parent source's Parquet output (`dependency.from_source` + `dependency.field` + `input_key`)
+- **Union** (`type: union`) — combines records from multiple parent sources into one (`sources` list + optional `dedupe_by`). All parent sources must have the same endpoint. Useful for merging multiple search results before a single dependent source
 
 Sources are topologically sorted by dependencies. `input_template` allows transforming extracted values before passing to API (e.g., `{type: company, value: "{value}"}`). Nested objects stored as JSON strings in Parquet are auto-parsed back when extracting with dot-notation paths.
 
@@ -177,7 +199,7 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 
 **Webhook Notifications**: `WebhookNotifier` sends POST notifications on collection complete/failure to URLs defined in `notifications.on_complete` / `notifications.on_failure`.
 
-**Provenance Tracking**: Dependent and from_file source records are annotated with `_input_value` (the raw extracted value that produced the record) and `_parent_source` (parent source ID for dependent sources). This enables FK linking when loading into a relational database.
+**Provenance Tracking**: Dependent and from_file source records are annotated with `_input_value` (the raw extracted value that produced the record) and `_parent_source` (parent source ID for dependent sources). Union source records are annotated with `_union_source` (ID of the parent source the record came from). This enables FK linking when loading into a relational database.
 
 **Incremental Deduplication**: `MetadataStore` tracks which input values have been collected per source via `collected_inputs` in `metadata.json`. Running `--incremental` skips already-collected values for dependent and from_file sources. `anysite dataset reset-cursor` clears this state.
 
