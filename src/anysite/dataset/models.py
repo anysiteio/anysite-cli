@@ -143,7 +143,14 @@ class DatasetSource(BaseModel):
     """A single data source within a dataset."""
 
     id: str = Field(description="Unique source identifier")
-    endpoint: str = Field(description="API endpoint path (e.g., /api/linkedin/search/users)")
+    type: Literal["api", "llm"] = Field(
+        default="api",
+        description="Source type: 'api' for API collection, 'llm' for LLM-only processing of parent data",
+    )
+    endpoint: str | None = Field(
+        default=None,
+        description="API endpoint path (e.g., /api/linkedin/search/users). Required for type=api.",
+    )
     params: dict[str, Any] = Field(default_factory=dict, description="Static API parameters")
     dependency: SourceDependency | None = Field(
         default=None,
@@ -191,10 +198,29 @@ class DatasetSource(BaseModel):
 
     @field_validator("endpoint")
     @classmethod
-    def validate_endpoint(cls, v: str) -> str:
-        if not v.startswith("/"):
+    def validate_endpoint(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith("/"):
             raise ValueError(f"Endpoint must start with '/', got: {v}")
         return v
+
+    @model_validator(mode="after")
+    def validate_source_type(self) -> DatasetSource:
+        """Validate source configuration based on type."""
+        if self.type == "llm":
+            if self.endpoint is not None:
+                raise ValueError("LLM source cannot have endpoint (no API calls)")
+            if not self.dependency:
+                raise ValueError("LLM source must have a dependency (parent source to process)")
+            if not self.llm:
+                raise ValueError("LLM source must have at least one LLM step")
+            if self.from_file is not None:
+                raise ValueError("LLM source cannot have from_file")
+            if self.input_key is not None:
+                raise ValueError("LLM source cannot have input_key")
+        else:  # type == "api"
+            if self.endpoint is None:
+                raise ValueError("API source requires endpoint")
+        return self
 
 
 class StorageConfig(BaseModel):

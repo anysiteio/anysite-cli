@@ -48,6 +48,84 @@ class TestDatasetSource:
         assert src.input_key == "user_urn"
 
 
+class TestLLMSourceType:
+    """Tests for type='llm' sources."""
+
+    def test_llm_source_valid(self):
+        """LLM source with dependency and llm steps is valid."""
+        src = DatasetSource(
+            id="enriched",
+            type="llm",
+            dependency=SourceDependency(from_source="profiles", field="urn"),
+            llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+        )
+        assert src.type == "llm"
+        assert src.endpoint is None
+        assert src.dependency is not None
+        assert len(src.llm) == 1
+
+    def test_llm_source_requires_dependency(self):
+        """LLM source without dependency raises error."""
+        with pytest.raises(ValueError, match="must have a dependency"):
+            DatasetSource(
+                id="enriched",
+                type="llm",
+                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+            )
+
+    def test_llm_source_requires_llm_steps(self):
+        """LLM source without llm steps raises error."""
+        with pytest.raises(ValueError, match="must have at least one LLM step"):
+            DatasetSource(
+                id="enriched",
+                type="llm",
+                dependency=SourceDependency(from_source="profiles", field="urn"),
+            )
+
+    def test_llm_source_cannot_have_endpoint(self):
+        """LLM source with endpoint raises error."""
+        with pytest.raises(ValueError, match="cannot have endpoint"):
+            DatasetSource(
+                id="enriched",
+                type="llm",
+                endpoint="/api/something",
+                dependency=SourceDependency(from_source="profiles", field="urn"),
+                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+            )
+
+    def test_llm_source_cannot_have_from_file(self):
+        """LLM source with from_file raises error."""
+        with pytest.raises(ValueError, match="cannot have from_file"):
+            DatasetSource(
+                id="enriched",
+                type="llm",
+                from_file="./data.txt",
+                dependency=SourceDependency(from_source="profiles", field="urn"),
+                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+            )
+
+    def test_llm_source_cannot_have_input_key(self):
+        """LLM source with input_key raises error."""
+        with pytest.raises(ValueError, match="cannot have input_key"):
+            DatasetSource(
+                id="enriched",
+                type="llm",
+                input_key="user",
+                dependency=SourceDependency(from_source="profiles", field="urn"),
+                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+            )
+
+    def test_api_source_requires_endpoint(self):
+        """API source (default type) without endpoint raises error."""
+        with pytest.raises(ValueError, match="requires endpoint"):
+            DatasetSource(id="test", type="api")
+
+    def test_default_type_is_api(self):
+        """Default source type is 'api'."""
+        src = DatasetSource(id="test", endpoint="/api/test")
+        assert src.type == "api"
+
+
 class TestDatasetConfig:
     def test_from_dict(self):
         config = DatasetConfig(

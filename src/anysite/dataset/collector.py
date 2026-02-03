@@ -20,7 +20,6 @@ from anysite.dataset.storage import (
     MetadataStore,
     get_parquet_path,
     read_latest_parquet,
-    read_parquet,
     write_parquet,
 )
 from anysite.output.console import print_info, print_success, print_warning
@@ -39,7 +38,7 @@ class CollectionPlan:
     def add_step(
         self,
         source_id: str,
-        endpoint: str,
+        endpoint: str | None,
         kind: str,
         params: dict[str, Any] | None = None,
         dependency: str | None = None,
@@ -98,7 +97,7 @@ async def collect_dataset(
 
     if dry_run:
         plan = _build_plan(
-            ordered, config, base_path, metadata, incremental, today,
+            ordered, base_path, metadata, incremental, today,
             config_dir=config_dir,
         )
         return _print_plan(plan)
@@ -136,7 +135,9 @@ async def collect_dataset(
             if not quiet:
                 print_info(f"Collecting {source.id} from {source.endpoint}...")
 
-            if source.from_file is not None:
+            if source.type == "llm":
+                records = await _collect_llm(source, base_path, quiet=quiet)
+            elif source.from_file is not None:
                 file_base = config_dir if config_dir else Path.cwd()
                 records = await _collect_from_file(
                     source, config_dir=file_base,
@@ -237,6 +238,8 @@ async def collect_dataset(
 
 async def _collect_independent(source: DatasetSource) -> list[dict[str, Any]]:
     """Collect an independent source (single API call)."""
+    if source.endpoint is None:
+        raise DatasetError(f"Source {source.id} has no endpoint defined")
     async with create_client() as client:
         data = await client.post(source.endpoint, data=source.params)
     # API returns list[dict] or dict
@@ -324,6 +327,10 @@ async def _collect_batch(
     - ``_input_value``: the raw value used to make the API call
     - ``_parent_source``: the source ID that produced the input (if dependent)
     """
+    if source.endpoint is None:
+        raise DatasetError(f"Source {source.id} has no endpoint defined")
+    endpoint = source.endpoint  # capture for closure
+
     limiter = RateLimiter(source.rate_limit) if source.rate_limit else None
     on_error = ErrorHandling(source.on_error) if source.on_error else ErrorHandling.SKIP
 
@@ -346,7 +353,7 @@ async def _collect_batch(
         else:
             payload = {source.input_key: val, **source.params}  # type: ignore[dict-item]
         async with create_client() as client:
-            result = await client.post(source.endpoint, data=payload)
+            result = await client.post(endpoint, data=payload)
 
         # Annotate each record with provenance metadata so that
         # child→parent relationships can be reconstructed later.
@@ -410,6 +417,37 @@ def _flatten_results(results: list[Any]) -> list[dict[str, Any]]:
             else:
                 all_records.append(result)
     return all_records
+
+
+async def _collect_llm(
+    source: DatasetSource,
+    base_path: Path,
+    *,
+    quiet: bool = False,
+) -> list[dict[str, Any]]:
+    """Collect by reading parent data for LLM-only processing.
+
+    Unlike dependent sources (which make API calls per extracted value),
+    LLM sources just read the parent records. LLM enrichment happens
+    in the main collection loop after this function returns.
+    """
+    dep = source.dependency
+    if dep is None:
+        raise DatasetError(f"LLM source {source.id} has no dependency defined")
+
+    # Read parent data (latest snapshot only)
+    parent_dir = base_path / "raw" / dep.from_source
+    records = read_latest_parquet(parent_dir)
+
+    if not records:
+        if not quiet:
+            print_warning(f"No parent data for {dep.from_source}, skipping {source.id}")
+        return []
+
+    if not quiet:
+        print_info(f"  Loaded {len(records)} records from {dep.from_source}")
+
+    return records
 
 
 async def _collect_dependent(
@@ -582,7 +620,6 @@ def _filter_sources(
 
 def _build_plan(
     ordered: list[DatasetSource],
-    config: DatasetConfig,
     base_path: Path,
     metadata: MetadataStore,
     incremental: bool,
@@ -601,7 +638,19 @@ def _build_plan(
 
         llm_steps = len(source.llm) if source.llm else 0
 
-        if source.from_file is not None:
+        if source.type == "llm":
+            # LLM-only source: reads parent data, no API calls
+            est = _count_dependent_inputs(source, base_path, metadata)
+            plan.add_step(
+                source_id=source.id,
+                endpoint=None,
+                kind="llm",
+                dependency=source.dependency.from_source if source.dependency else None,
+                estimated_requests=est,
+                refresh=source.refresh,
+                llm_steps=llm_steps,
+            )
+        elif source.from_file is not None:
             est = _count_file_inputs(source, config_dir)
             plan.add_step(
                 source_id=source.id,
@@ -696,7 +745,7 @@ def _print_plan(plan: CollectionPlan) -> dict[str, int]:
         table.add_row(
             str(i),
             step["source"],
-            step["endpoint"],
+            step["endpoint"] or "-",
             kind,
             step.get("dependency") or "-",
             str(step.get("estimated_requests") or "?"),

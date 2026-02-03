@@ -13,6 +13,7 @@ from anysite.dataset.collector import (
 from anysite.dataset.models import (
     DatasetConfig,
     DatasetSource,
+    LLMStepConfig,
     SourceDependency,
 )
 from anysite.dataset.storage import read_parquet, write_parquet
@@ -263,7 +264,7 @@ class TestDryRunEstimates:
 
         metadata = MetadataStore(tmp_path / "data")
         plan = _build_plan(
-            config.topological_sort(), config, tmp_path / "data",
+            config.topological_sort(), tmp_path / "data",
             metadata, False, date.today(),
         )
         assert plan.steps[0]["estimated_requests"] == 1
@@ -296,7 +297,7 @@ class TestDryRunEstimates:
 
         metadata = MetadataStore(tmp_path / "data")
         plan = _build_plan(
-            config.topological_sort(), config, tmp_path / "data",
+            config.topological_sort(), tmp_path / "data",
             metadata, False, date.today(),
         )
         # child step: 3 unique values (a, b, c) after dedupe
@@ -324,7 +325,7 @@ class TestDryRunEstimates:
 
         metadata = MetadataStore(tmp_path / "data")
         plan = _build_plan(
-            config.topological_sort(), config, tmp_path / "data",
+            config.topological_sort(), tmp_path / "data",
             metadata, False, date.today(),
         )
         assert plan.steps[0]["estimated_requests"] == 3
@@ -739,3 +740,116 @@ class TestIncrementalDedup:
         # Only gamma should be fetched
         assert results["items"] == 1
         assert call_count == 1
+
+
+class TestLLMSourceType:
+    """Tests for type='llm' sources that process parent data without API calls."""
+
+    @pytest.mark.asyncio
+    async def test_collect_llm_reads_parent_data(self, tmp_path):
+        """LLM source reads parent Parquet and returns records."""
+        from anysite.dataset.collector import _collect_llm
+        from anysite.dataset.storage import write_parquet
+
+        # Create parent data
+        parent_dir = tmp_path / "data" / "raw" / "profiles"
+        parent_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice", "score": 10}, {"name": "Bob", "score": 20}],
+            parent_dir / "2026-01-15.parquet",
+        )
+
+        # Create LLM source
+        source = DatasetSource(
+            id="profiles_enriched",
+            type="llm",
+            dependency=SourceDependency(from_source="profiles", field="name"),
+            llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+        )
+
+        records = await _collect_llm(source, tmp_path / "data", quiet=True)
+
+        assert len(records) == 2
+        assert records[0]["name"] == "Alice"
+        assert records[1]["name"] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_collect_llm_returns_empty_if_no_parent(self, tmp_path):
+        """LLM source returns empty list if parent has no data."""
+        from anysite.dataset.collector import _collect_llm
+
+        # No parent data exists
+        source = DatasetSource(
+            id="enriched",
+            type="llm",
+            dependency=SourceDependency(from_source="missing_parent", field="name"),
+            llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+        )
+
+        records = await _collect_llm(source, tmp_path / "data", quiet=True)
+
+        assert records == []
+
+    @pytest.mark.asyncio
+    async def test_llm_source_in_topological_order(self, tmp_path):
+        """LLM source is correctly ordered after its parent."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(
+                    id="enriched",
+                    type="llm",
+                    dependency=SourceDependency(from_source="profiles", field="name"),
+                    llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
+                ),
+                DatasetSource(id="profiles", endpoint="/api/profiles"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        ordered = config.topological_sort()
+        ids = [s.id for s in ordered]
+
+        assert ids.index("profiles") < ids.index("enriched")
+
+    @pytest.mark.asyncio
+    async def test_llm_source_dry_run_plan(self, tmp_path):
+        """Dry run shows LLM source with correct kind."""
+        from datetime import date
+
+        from anysite.dataset.collector import _build_plan
+        from anysite.dataset.storage import MetadataStore, write_parquet
+
+        # Create parent data
+        parent_dir = tmp_path / "data" / "raw" / "profiles"
+        parent_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice"}, {"name": "Bob"}],
+            parent_dir / "2026-01-15.parquet",
+        )
+
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                DatasetSource(id="profiles", endpoint="/api/profiles"),
+                DatasetSource(
+                    id="enriched",
+                    type="llm",
+                    dependency=SourceDependency(from_source="profiles", field="name"),
+                    llm=[LLMStepConfig(type="enrich", add=["score:1-10"])],
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        metadata = MetadataStore(tmp_path / "data")
+        plan = _build_plan(
+            config.topological_sort(), tmp_path / "data",
+            metadata, False, date.today(),
+        )
+
+        llm_step = [s for s in plan.steps if s["source"] == "enriched"][0]
+        assert llm_step["kind"] == "llm"
+        assert llm_step["endpoint"] is None
+        assert llm_step["dependency"] == "profiles"
+        assert llm_step["llm_steps"] == 1
