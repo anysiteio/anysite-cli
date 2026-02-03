@@ -306,6 +306,59 @@ anysite dataset diff dataset.yaml --source profiles --key urn.value --fields "na
 anysite dataset reset-cursor dataset.yaml
 ```
 
+### Incremental Collection
+
+When collecting data from `from_file` or `dependency` sources, anysite tracks which input values have already been processed. This allows resuming collection without re-fetching data you already have.
+
+**How it works:**
+1. After collecting a source, input values are saved to `metadata.json` (`collected_inputs`)
+2. On next run with `--incremental`, these values are skipped
+3. Only new input values are collected
+
+```bash
+# First run — collects all 1000 companies from file
+anysite dataset collect dataset.yaml
+# → Collected: 1000 records
+
+# Add 50 new companies to the input file, run with --incremental
+anysite dataset collect dataset.yaml --incremental
+# → Skipped: 1000 (already collected), Collected: 50 (new only)
+
+# Force re-collection of everything
+anysite dataset reset-cursor dataset.yaml
+anysite dataset collect dataset.yaml
+# → Collected: 1050 records
+```
+
+**Per-source control with `refresh`:**
+```yaml
+sources:
+  - id: profiles
+    refresh: auto      # (default) respects --incremental, skips collected inputs
+
+  - id: activity
+    refresh: always    # ignores --incremental, always re-collects
+                       # useful for time-sensitive data (posts, activity feeds)
+```
+
+**Reset cursor:**
+```bash
+# Reset all sources — next run collects everything
+anysite dataset reset-cursor dataset.yaml
+
+# Reset specific source only
+anysite dataset reset-cursor dataset.yaml --source profiles
+```
+
+**Typical workflow for scheduled pipelines:**
+```bash
+# Daily cron with incremental — only fetches new data
+anysite dataset schedule dataset.yaml --incremental --load-db pg
+
+# Weekly full refresh — reset and collect all
+anysite dataset reset-cursor dataset.yaml && anysite dataset collect dataset.yaml --load-db pg
+```
+
 ## Database
 
 Manage database connections and run queries.
