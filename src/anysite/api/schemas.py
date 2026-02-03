@@ -314,12 +314,12 @@ def list_endpoints() -> list[dict[str, Any]]:
     ]
 
 
-def convert_value(value: str, type_hint: str) -> str | int | bool | float:
+def convert_value(value: str, type_hint: str) -> str | int | bool | float | list | dict:
     """Convert a string value to the type specified in the schema.
 
     Args:
         value: Raw string value from CLI key=value arg.
-        type_hint: Type from schema ('integer', 'boolean', 'number', 'string', etc.)
+        type_hint: Type from schema ('integer', 'boolean', 'number', 'string', 'array', etc.)
 
     Returns:
         Converted value.
@@ -330,4 +330,19 @@ def convert_value(value: str, type_hint: str) -> str | int | bool | float:
         return value.lower() in ("true", "1", "yes")
     if type_hint == "number":
         return float(value)
+    if type_hint == "array":
+        # Parse JSON array
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return value
+    # Auto-detect JSON arrays/objects even without type hint
+    if value.startswith("[") or value.startswith("{"):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
     return value

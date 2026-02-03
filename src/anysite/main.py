@@ -1,5 +1,6 @@
 """Main CLI application."""
 
+import json
 from typing import Annotated
 
 import typer
@@ -362,7 +363,7 @@ def api_call(
 
     # Convert types using schema if available
     schema = get_schema(endpoint)
-    payload: dict[str, str | int | bool | float] = {}
+    payload: dict[str, str | int | bool | float | list | dict] = {}
     if schema and schema.get("input"):
         input_schema = schema["input"]
         for key, value in raw_params.items():
@@ -381,6 +382,12 @@ def api_call(
                 payload[key] = int(value)
             elif value.lower() in ("true", "false"):
                 payload[key] = value.lower() == "true"
+            elif value.startswith("[") or value.startswith("{"):
+                # Try to parse JSON arrays/objects
+                try:
+                    payload[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    payload[key] = value
             else:
                 payload[key] = value
 
