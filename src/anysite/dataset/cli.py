@@ -108,6 +108,10 @@ def collect(
         bool,
         typer.Option("--quiet", "-q", help="Suppress progress output"),
     ] = False,
+    no_llm: Annotated[
+        bool,
+        typer.Option("--no-llm", help="Skip LLM enrichment steps"),
+    ] = False,
     load_db: Annotated[
         str | None,
         typer.Option("--load-db", help="After collection, load into database (connection name)"),
@@ -126,6 +130,7 @@ def collect(
             incremental=incremental,
             dry_run=dry_run,
             quiet=quiet,
+            no_llm=no_llm,
         )
 
         if not dry_run and not quiet:

@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
-from anysite.dataset.models import DatasetConfig, DatasetSource, SourceDependency, StorageConfig
+from anysite.dataset.models import DatasetConfig, DatasetSource, LLMStepConfig, SourceDependency, StorageConfig
 
 
 class TestSourceDependency:
@@ -249,3 +249,77 @@ class TestStoragePath:
             storage=StorageConfig(path="./my_data/"),
         )
         assert config.storage_path() == Path("./my_data/")
+
+
+class TestLLMStepConfig:
+    def test_enrich_valid(self):
+        step = LLMStepConfig(type="enrich", add=["mood:happy/sad"])
+        assert step.type == "enrich"
+        assert step.add == ["mood:happy/sad"]
+
+    def test_enrich_without_add_raises(self):
+        with pytest.raises(ValueError, match="enrich step requires 'add'"):
+            LLMStepConfig(type="enrich")
+
+    def test_classify_valid(self):
+        step = LLMStepConfig(type="classify", categories="a,b,c")
+        assert step.categories == "a,b,c"
+
+    def test_classify_without_categories_is_auto(self):
+        step = LLMStepConfig(type="classify")
+        assert step.categories is None
+
+    def test_summarize_defaults(self):
+        step = LLMStepConfig(type="summarize")
+        assert step.max_length == 100
+        assert step.output_column is None
+
+    def test_generate_valid(self):
+        step = LLMStepConfig(type="generate", prompt="Hello {name}")
+        assert step.prompt == "Hello {name}"
+
+    def test_generate_without_prompt_raises(self):
+        with pytest.raises(ValueError, match="generate step requires 'prompt'"):
+            LLMStepConfig(type="generate")
+
+    def test_common_defaults(self):
+        step = LLMStepConfig(type="summarize")
+        assert step.fields == []
+        assert step.temperature is None
+        assert step.max_tokens is None
+        assert step.provider is None
+        assert step.model is None
+        assert step.output_column is None
+
+    def test_common_overrides(self):
+        step = LLMStepConfig(
+            type="classify",
+            categories="a,b",
+            provider="anthropic",
+            model="claude-sonnet-4-5-20250514",
+            temperature=0.5,
+            max_tokens=2048,
+            output_column="role",
+            fields=["headline"],
+        )
+        assert step.provider == "anthropic"
+        assert step.model == "claude-sonnet-4-5-20250514"
+        assert step.temperature == 0.5
+        assert step.output_column == "role"
+
+    def test_source_with_llm_steps(self):
+        src = DatasetSource(
+            id="test",
+            endpoint="/api/test",
+            llm=[
+                LLMStepConfig(type="enrich", add=["mood:happy/sad"]),
+                LLMStepConfig(type="summarize"),
+            ],
+        )
+        assert len(src.llm) == 2
+        assert src.llm[0].type == "enrich"
+        assert src.llm[1].type == "summarize"
+
+    def test_source_without_llm_defaults_empty(self):
+        src = DatasetSource(id="test", endpoint="/api/test")
+        assert src.llm == []

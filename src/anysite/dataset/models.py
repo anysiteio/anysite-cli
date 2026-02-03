@@ -93,6 +93,52 @@ class DbLoadConfig(BaseModel):
     )
 
 
+class LLMStepConfig(BaseModel):
+    """A single LLM enrichment step applied to records after collection."""
+
+    type: Literal["enrich", "classify", "summarize", "generate"] = Field(
+        description="LLM operation type"
+    )
+    # enrich-specific
+    add: list[str] = Field(
+        default_factory=list,
+        description="Field specs for enrich: 'name:type_or_values' (e.g., 'sentiment:positive/negative/neutral')",
+    )
+    # classify-specific
+    categories: str | None = Field(
+        default=None,
+        description="Comma-separated categories (omit for auto-detect)",
+    )
+    # summarize-specific
+    max_length: int = Field(default=100, description="Max words for summarize")
+    # generate-specific
+    prompt: str | None = Field(
+        default=None,
+        description="Custom prompt template with {field} placeholders",
+    )
+    # common
+    output_column: str | None = Field(
+        default=None,
+        description="Output column name (default depends on type: category, summary, text)",
+    )
+    fields: list[str] = Field(
+        default_factory=list,
+        description="Record fields to include in LLM prompt (empty = all)",
+    )
+    temperature: float | None = Field(default=None, description="LLM temperature override")
+    max_tokens: int | None = Field(default=None, description="Max response tokens override")
+    provider: str | None = Field(default=None, description="LLM provider override (openai or anthropic)")
+    model: str | None = Field(default=None, description="Model ID override")
+
+    @model_validator(mode="after")
+    def validate_step(self) -> LLMStepConfig:
+        if self.type == "enrich" and not self.add:
+            raise ValueError("enrich step requires 'add' field specs")
+        if self.type == "generate" and not self.prompt:
+            raise ValueError("generate step requires 'prompt'")
+        return self
+
+
 class DatasetSource(BaseModel):
     """A single data source within a dataset."""
 
@@ -129,6 +175,10 @@ class DatasetSource(BaseModel):
     transform: TransformConfig | None = Field(
         default=None,
         description="Post-collection transform (filter/fields/add_columns)",
+    )
+    llm: list[LLMStepConfig] = Field(
+        default_factory=list,
+        description="LLM enrichment steps (after collection, before Parquet write)",
     )
     export: list[ExportDestination] = Field(
         default_factory=list,

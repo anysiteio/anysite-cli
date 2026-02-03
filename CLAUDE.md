@@ -41,6 +41,7 @@ anysite schema update
 anysite dataset init my-dataset
 anysite dataset collect dataset.yaml
 anysite dataset collect dataset.yaml --source linkedin_profiles --incremental --dry-run
+anysite dataset collect dataset.yaml --no-llm
 anysite dataset collect dataset.yaml --load-db pg
 anysite dataset status dataset.yaml
 anysite dataset query dataset.yaml --sql "SELECT * FROM profiles LIMIT 10"
@@ -108,9 +109,10 @@ anysite db upsert mydb --table users --conflict-columns id --stdin
 - `utils/fields.py` - Field selection with dot notation, array wildcards, built-in presets (minimal, contact, recruiting)
 - `utils/retry.py` - RetryConfig and retry logic
 - `dataset/__init__.py` - `check_data_deps()` — verifies optional duckdb/pyarrow are installed
-- `dataset/models.py` - Pydantic models for dataset YAML config (`DatasetConfig`, `DatasetSource`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`), topological sort (Kahn's algorithm)
+- `dataset/models.py` - Pydantic models for dataset YAML config (`DatasetConfig`, `DatasetSource`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`), topological sort (Kahn's algorithm)
 - `dataset/storage.py` - Parquet read/write via pyarrow, directory layout (`raw/<source_id>/<date>.parquet`), `MetadataStore` for `metadata.json`
-- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, three source types (independent, from_file, dependent), per-source transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`
+- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, three source types (independent, from_file, dependent), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
+- `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records
 - `dataset/analyzer.py` - DuckDB analytics: SQL query, column stats, profile, interactive shell. Registers views over Parquet files
 - `dataset/transformer.py` - `RecordTransformer`: safe filter parser (no `eval()`), field selection with dot-notation/aliases, static column injection. Filter syntax: `.field > 10`, `.status == "active"`, `and`/`or`
 - `dataset/exporters.py` - Per-source export after Parquet write: `FileExporter` (JSON/JSONL/CSV with `{{date}}`/`{{source}}` templates), `WebhookExporter` (POST records to URL)
@@ -197,6 +199,8 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
   raw/<source_id>/<date>.parquet
   metadata.json
 ```
+
+**LLM Enrichment** (in dataset pipeline): Optional `llm` list per source in dataset YAML. Steps run in order after API collection, before Parquet write. Four types: **enrich** (extract structured attributes via `add` specs), **classify** (categorize with explicit or auto-detected categories), **summarize** (concise text summaries), **generate** (text from custom prompt templates). Enriched fields are stored in Parquet alongside raw data and flow to DB via `db_load.fields`. Skip with `--no-llm` flag on `dataset collect`.
 
 **LLM Subsystem** (`anysite llm`): LLM-powered analysis of collected dataset records using OpenAI or Anthropic. Supports summarization, classification (with auto-detect), enrichment with structured output, free-form text generation, cross-source record matching, and semantic deduplication. Optional — requires `pip install anysite-cli[llm]`. Registered in `main.py` via try/except ImportError. Configuration stored in `~/.anysite/config.yaml` under `llm:` key. Response caching in SQLite at `~/.anysite/llm_cache.db`. Rate limiting via token bucket, concurrent processing via asyncio semaphore.
 

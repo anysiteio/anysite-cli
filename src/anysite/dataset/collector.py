@@ -45,6 +45,7 @@ class CollectionPlan:
         dependency: str | None = None,
         estimated_requests: int | None = None,
         refresh: str = "auto",
+        llm_steps: int = 0,
     ) -> None:
         self.steps.append({
             "source": source_id,
@@ -54,6 +55,7 @@ class CollectionPlan:
             "dependency": dependency,
             "estimated_requests": estimated_requests,
             "refresh": refresh,
+            "llm_steps": llm_steps,
         })
 
 
@@ -65,6 +67,7 @@ async def collect_dataset(
     incremental: bool = False,
     dry_run: bool = False,
     quiet: bool = False,
+    no_llm: bool = False,
 ) -> dict[str, int]:
     """Collect all sources in a dataset.
 
@@ -74,6 +77,7 @@ async def collect_dataset(
         incremental: Skip sources that already have data for today.
         dry_run: Show plan without executing.
         quiet: Suppress progress output.
+        no_llm: Skip LLM enrichment steps.
 
     Returns:
         Dict mapping source_id to record count collected.
@@ -145,6 +149,14 @@ async def collect_dataset(
                     source, base_path,
                     metadata=metadata, incremental=incremental, quiet=quiet,
                 )
+
+            # LLM enrichment (after collection, before Parquet write)
+            if source.llm and records and not no_llm:
+                from anysite.dataset.llm_enrichment import enrich_records
+
+                if not quiet:
+                    print_info(f"  Running {len(source.llm)} LLM enrichment step(s)...")
+                records = await enrich_records(records, source.llm, quiet=quiet)
 
             # Write FULL records to Parquet (preserves all fields for dependency resolution)
             parquet_path = get_parquet_path(base_path, source.id, today)
@@ -587,6 +599,8 @@ def _build_plan(
             if parquet_path.exists():
                 continue
 
+        llm_steps = len(source.llm) if source.llm else 0
+
         if source.from_file is not None:
             est = _count_file_inputs(source, config_dir)
             plan.add_step(
@@ -596,6 +610,7 @@ def _build_plan(
                 params={"file": source.from_file, "field": source.file_field},
                 estimated_requests=est,
                 refresh=source.refresh,
+                llm_steps=llm_steps,
             )
         elif source.dependency is None:
             plan.add_step(
@@ -605,6 +620,7 @@ def _build_plan(
                 params=source.params,
                 estimated_requests=1,
                 refresh=source.refresh,
+                llm_steps=llm_steps,
             )
         else:
             est = _count_dependent_inputs(source, base_path, metadata)
@@ -615,6 +631,7 @@ def _build_plan(
                 dependency=source.dependency.from_source,
                 estimated_requests=est,
                 refresh=source.refresh,
+                llm_steps=llm_steps,
             )
 
     return plan
@@ -669,11 +686,13 @@ def _print_plan(plan: CollectionPlan) -> dict[str, int]:
     table.add_column("Type")
     table.add_column("Depends On")
     table.add_column("Est. Requests")
+    table.add_column("LLM")
 
     for i, step in enumerate(plan.steps, 1):
         kind = step["kind"]
         if step.get("refresh") == "always":
             kind += " (refresh)"
+        llm_col = f"{step['llm_steps']} step(s)" if step.get("llm_steps") else "-"
         table.add_row(
             str(i),
             step["source"],
@@ -681,6 +700,7 @@ def _print_plan(plan: CollectionPlan) -> dict[str, int]:
             kind,
             step.get("dependency") or "-",
             str(step.get("estimated_requests") or "?"),
+            llm_col,
         )
 
     console.print(table)

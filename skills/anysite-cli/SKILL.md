@@ -136,6 +136,14 @@ sources:
     parallel: 3
     on_error: skip
     refresh: always             # Re-collect every run even with --incremental
+    llm:                          # LLM enrichment (after collection, before Parquet)
+      - type: enrich
+        add: ["sentiment:positive/negative/neutral", "language:string"]
+        fields: [headline]
+      - type: classify
+        categories: "developer,recruiter,executive"
+        output_column: role_type
+        fields: [headline]
 
 storage:
   format: parquet
@@ -167,6 +175,9 @@ anysite dataset collect dataset.yaml --incremental --load-db pg
 
 # Single source and its dependencies
 anysite dataset collect dataset.yaml --source employees
+
+# Skip LLM enrichment steps
+anysite dataset collect dataset.yaml --no-llm
 ```
 
 ### Step 4: Query with DuckDB
