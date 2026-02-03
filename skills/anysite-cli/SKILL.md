@@ -33,6 +33,22 @@ Before executing any data collection task, verify these in order:
    ```
    If not set: get key at https://app.anysite.io, then `anysite config set api_key sk-xxxxx`
 
+### Best Practices
+
+1. **Use dataset pipelines for multi-step tasks**
+   - If a task requires sequential API calls, LLM enrichment, or chained data processing — create a `dataset.yaml` config instead of running multiple ad-hoc commands
+   - Dataset pipelines handle dependencies, incremental collection, and error recovery automatically
+
+2. **Always save data in Parquet format**
+   - Default to Parquet for all data storage — both dataset pipelines and single API calls
+   - Parquet is columnar, compressed, and supports nested JSON natively
+   - Use `--format jsonl --output data.parquet` for single queries when persistence is needed
+   - Only use CSV/JSON/JSONL for final exports or when explicitly requested
+
+3. **Prefer datasets over ad-hoc scripts**
+   - Even for "simple" tasks that grow in scope, a dataset config is easier to maintain
+   - Benefits: run history, incremental sync, scheduling, notifications, DB loading
+
 ### Endpoint Discovery
 
 **ALWAYS discover endpoints before writing API calls or dataset configs.**
