@@ -7,6 +7,26 @@ description: Operate the anysite command-line tool for web data extraction, batc
 
 Command-line tool for web data extraction, dataset pipelines, and database operations.
 
+## Agent Planning Workflow
+
+**BEFORE planning any data collection task, follow this sequence:**
+
+1. **Discover available endpoints**
+   ```bash
+   anysite describe --search "<keyword>"   # Search by domain (linkedin, company, user, etc.)
+   ```
+
+2. **Select endpoints needed for the task** — identify which endpoints will provide the required data
+
+3. **Inspect each selected endpoint**
+   ```bash
+   anysite describe /api/linkedin/company  # View input params and output fields
+   ```
+
+4. **Only then plan** — now you know the exact parameters, field names, and data structure to build your config or API calls
+
+This prevents errors from wrong endpoint paths, missing required parameters, or incorrect field names in dependencies.
+
 ## Best Practices
 
 1. **Use dataset pipelines for multi-step tasks**
@@ -15,7 +35,7 @@ Command-line tool for web data extraction, dataset pipelines, and database opera
    - Even for "simple" tasks that grow in scope, a dataset config is easier to maintain
    - Benefits: run history, incremental sync, scheduling, notifications, DB loading
 
-2. **Save data in Parquet format by default** — unless user requests another format or CSV/JSON fits better for the use case
+2. **Save data in Parquet format by default** — unless user requests another format or CSV/JSON fits better
 
 3. **Prefer datasets over ad-hoc scripts** — one dataset.yaml replaces dozens of shell commands
 
@@ -91,7 +111,7 @@ anysite dataset init my-dataset
 1. **Independent** — single API call with static `params`
 2. **from_file** — batch calls iterating over input file values
 3. **Dependent** — batch calls using values extracted from a parent source
-4. **LLM (type: llm)** — process parent data through LLM without API calls (NEW)
+4. **LLM (type: llm)** — process parent data through LLM without API calls
 
 ### Comprehensive Dataset YAML Reference
 
@@ -305,18 +325,6 @@ anysite llm cache-stats
 anysite llm cache-clear
 ```
 
-## Common API Endpoints
-
-```
-/api/linkedin/user                    user=<username>
-/api/linkedin/company                 company=<alias>
-/api/linkedin/search/users            keywords=<text> count=<n>
-/api/linkedin/company/employees       companies=[{type,value}] count=<n>
-/api/linkedin/user/posts              urn=<urn> count=<n>
-/api/instagram/user                   user=<username>
-/api/twitter/user                     user=<username>
-/api/web/parse                        url=<url>
-```
 
 Use `anysite describe --search <keyword>` for more endpoints.
 
