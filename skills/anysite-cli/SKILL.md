@@ -88,6 +88,22 @@ anysite api /api/linkedin/search/users keywords="CTO" count=50 --format csv --ou
 anysite api /api/linkedin/user user=satyanadella --fields "name,headline,urn.value" -q | jq
 ```
 
+### URN/Name Parameter Formats
+
+Parameters like `location`, `current_companies`, `industry` accept two formats:
+
+```bash
+# Single name (text search) — resolves to URNs automatically
+location="London"
+current_companies="Microsoft"
+
+# Multiple URNs (direct) — use JSON array in single quotes
+'location=["urn:li:geo:101165590", "urn:li:geo:101282230"]'
+'current_companies=["urn:li:company:1035", "urn:li:company:1441"]'
+```
+
+**Note:** List of names `["Microsoft", "Google"]` is NOT supported — use either one name OR multiple URNs.
+
 ## Batch Processing
 
 ```bash
@@ -106,12 +122,13 @@ anysite dataset init my-dataset
 # Creates my-dataset/dataset.yaml with template config
 ```
 
-### Four Source Types
+### Five Source Types
 
 1. **Independent** — single API call with static `params`
 2. **from_file** — batch calls iterating over input file values
 3. **Dependent** — batch calls using values extracted from a parent source
-4. **LLM (type: llm)** — process parent data through LLM without API calls
+4. **Union (type: union)** — combine records from multiple parent sources into one
+5. **LLM (type: llm)** — process parent data through LLM without API calls
 
 ### Comprehensive Dataset YAML Reference
 
@@ -129,6 +146,10 @@ sources:
     parallel: 1                     # Concurrent requests: 1-10 (default: 1)
     rate_limit: "10/s"              # Rate limit: "N/s", "N/m", "N/h"
     on_error: stop                  # Error handling: stop | skip (default: stop)
+
+  - id: search_extra                # Another search (can be combined with union)
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "data engineer", count: 50 }
 
   # === TYPE 2: from_file source (batch from file) ===
   - id: companies
@@ -154,9 +175,18 @@ sources:
       count: 5
     refresh: auto                   # Incremental behavior: auto (default) | always
 
-  # === TYPE 4: LLM source (process parent data without API) ===
+  # === TYPE 4: Union source (combine multiple sources) ===
+  - id: all_search_results
+    type: union                     # Source type: api (default) | union | llm
+    sources: [search_results, search_extra]  # Parent source IDs to combine (required)
+    dedupe_by: urn.value            # Optional: field path for deduplication (dot-notation)
+    # NOTE: type: union cannot have endpoint, dependency, from_file, input_key, params
+    # NOTE: all sources in the list must have the same endpoint (same data structure)
+    # Records are annotated with _union_source = parent source ID
+
+  # === TYPE 5: LLM source (process parent data without API) ===
   - id: employees_analyzed
-    type: llm                       # Source type: api (default) | llm
+    type: llm                       # Source type: api (default) | union | llm
     dependency:
       from_source: employees
       field: name                   # Required by schema (not used for LLM sources)
@@ -231,6 +261,43 @@ notifications:
   on_failure:
     - url: "https://alerts.example.com/fail"
 ```
+
+### type: union Source Details
+
+The `type: union` source combines records from multiple parent sources:
+
+- **Requires**: non-empty `sources` list (parent source IDs)
+- **Optional**: `dedupe_by` field path for removing duplicates (supports dot-notation)
+- **Cannot have**: `endpoint`, `dependency`, `from_file`, `input_key`, `params`
+- **Validation**: all parent sources must have the same endpoint (same data structure)
+- **Use case**: merge multiple search results before a single dependent source processes them
+
+```yaml
+sources:
+  - id: search_cto
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "CTO fintech", count: 50 }
+
+  - id: search_vp
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "VP Engineering", count: 50 }
+
+  # Union combines all search results
+  - id: all_candidates
+    type: union
+    sources: [search_cto, search_vp]
+    dedupe_by: urn.value              # Remove duplicates by URN
+
+  # Single dependent source processes all candidates
+  - id: profiles
+    endpoint: /api/linkedin/user
+    dependency:
+      from_source: all_candidates
+      field: urn.value
+    input_key: user
+```
+
+Records from union sources are annotated with `_union_source` (the parent source ID they came from).
 
 ### type: llm Source Details
 
