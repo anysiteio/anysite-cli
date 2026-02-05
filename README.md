@@ -1,6 +1,22 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Anysite" width="200">
+</p>
+
 # Anysite CLI
 
-Web data extraction for humans and AI agents.
+A command-line toolkit that gives AI agents and humans full control over web data — from extraction to analysis to database loading — without flooding the context window.
+
+**Built for agents.** Structured JSON/CSV/JSONL output, schema-driven endpoint discovery (`anysite describe`), batch processing with rate limiting, and quiet mode for piping. An agent can discover 118+ endpoints, collect data, run SQL queries, and load results into a database — all through a single CLI, no custom code required.
+
+**Declarative data pipelines.** Define multi-source collection workflows in YAML: dependency chains between sources, union merges, incremental collection that skips already-fetched data, per-source transforms and exports, automatic topological execution. One `anysite dataset collect` replaces hundreds of lines of scripting.
+
+**LLM analysis without burning tokens.** Offload enrichment, classification, summarization, and deduplication to cheaper LLMs (OpenAI, Anthropic). Results are cached in SQLite — repeat runs cost nothing. Agents keep their context window for reasoning, not data crunching.
+
+**Database-ready output.** Auto-infer schemas from JSON, create tables, and load into SQLite or PostgreSQL with a single command. Foreign keys are linked automatically via provenance tracking. Diff-based incremental sync keeps your database up to date without full reloads.
+
+**Snapshot diffs, scheduling, and monitoring.** Compare collection snapshots to track what changed. Generate cron or systemd schedules. Get webhook notifications on success or failure. Full run history with per-run logs.
+
+Supports **LinkedIn** (profiles, companies, jobs, Sales Navigator, email lookup), **Instagram** (profiles, posts, reels, comments), **Twitter/X**, **Reddit**, **YouTube** (channels, videos, subtitles), **Y Combinator**, **SEC EDGAR**, **GitHub**, **Amazon**, **Google News**, **Trustpilot**, **TripAdvisor**, **Hacker News**, web page parsing, and [60+ more sources](https://anysite.io) via the Anysite API.
 
 ## Installation
 
