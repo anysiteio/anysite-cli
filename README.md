@@ -20,6 +20,22 @@ Supports **LinkedIn** (profiles, companies, jobs, Sales Navigator, email lookup)
 
 ## Installation
 
+**One-line install** (macOS / Linux — no Python or Homebrew required, all features included):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash
+```
+
+
+**Homebrew:**
+
+```bash
+brew tap anysiteio/cli https://github.com/anysiteio/anysite-cli
+brew install anysite
+```
+
+**pip** (if you already have Python 3.11+):
+
 ```bash
 pip install anysite-cli
 ```

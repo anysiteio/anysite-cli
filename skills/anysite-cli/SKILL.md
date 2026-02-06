@@ -7,97 +7,6 @@ description: Operate the anysite command-line tool for web data extraction, batc
 
 Command-line tool for web data extraction, dataset pipelines, and database operations.
 
-## Agent Protocol
-
-anysite CLI is **agent-first**: it auto-detects when called from a non-TTY (pipe, subprocess) and switches to structured JSON output automatically. No special flags needed.
-
-### First-run discovery
-
-Run `anysite` with no arguments. In a pipe/subprocess it returns a JSON discovery payload:
-
-```bash
-anysite  # → discovery JSON with all commands, protocol, exit codes, installed extras
-```
-
-The payload includes:
-- `result.commands` — all available commands with descriptions and subcommands
-- `result.agent_protocol` — how auto-JSON, `--json`, `--human`, `--non-interactive` work
-- `result.output_schema` — success/error envelope formats
-- `result.exit_codes` — machine-readable exit code meanings
-- `result.installed_extras` — which optional packages are available (data, llm, postgres)
-
-### Output modes
-
-| Context | Default output | Override |
-|---------|---------------|----------|
-| Pipe / subprocess (no TTY) | JSON envelope | `--human` to force human text |
-| Terminal (TTY) | Human-readable Rich text | `--json` to force JSON envelope |
-
-### JSON envelope format
-
-**Success:**
-```json
-{
-  "ok": true,
-  "result": { ... },
-  "hints": [{"action": "Next step", "command": "anysite ..."}],
-  "meta": {"version": "0.2.0", "command": "anysite db add"}
-}
-```
-
-**Error:**
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "CONNECTION_NOT_FOUND",
-    "message": "Connection 'foo' not found",
-    "retryable": false,
-    "suggestions": ["List connections: anysite db list"]
-  },
-  "meta": {"version": "0.2.0"}
-}
-```
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Usage error (invalid args, missing params) |
-| 3 | Authentication failed |
-| 4 | Resource not found |
-| 5 | Network / timeout / rate limit |
-
-### Error codes
-
-Every error includes a machine-readable `code` field:
-
-| Error code | Exit | Retryable | Trigger |
-|------------|------|-----------|---------|
-| `AUTH_FAILED` | 3 | no | Invalid/expired API key |
-| `RATE_LIMIT` | 5 | yes | Too many requests |
-| `NOT_FOUND` | 4 | no | Resource not found |
-| `VALIDATION_ERROR` | 2 | no | Bad input parameters |
-| `SERVER_ERROR` | 1 | yes | API server error |
-| `NETWORK_ERROR` | 5 | yes | Connection failure |
-| `TIMEOUT` | 5 | yes | Request timeout |
-| `CONNECTION_NOT_FOUND` | 4 | no | DB connection not found |
-| `DATASET_ERROR` | 1 | no | Dataset operation error |
-| `CIRCULAR_DEPENDENCY` | 2 | no | Circular dependency in config |
-| `SOURCE_NOT_FOUND` | 4 | no | Source not found in dataset |
-| `CONFIG_ERROR` | 2 | no | LLM configuration error |
-| `LLM_PROVIDER_ERROR` | 1 | yes | LLM provider failure |
-
-### Non-interactive mode
-
-Interactive prompts (confirmations, password inputs) are **auto-disabled** when stdin is not a TTY. Also available via `--non-interactive` flag. Commands that need confirmation without TTY require `--force` or explicit flags.
-
-### Hints
-
-Every command returns next-step hints — both in JSON envelope (`hints` array) and human mode (dim text on stderr). Use hints to discover follow-up commands without consulting documentation.
-
 ## Agent Planning Workflow
 
 **BEFORE planning any data collection task, follow this sequence:**
@@ -130,15 +39,6 @@ This prevents errors from wrong endpoint paths, missing required parameters, or 
 
 3. **Prefer datasets over ad-hoc scripts** — one dataset.yaml replaces dozens of shell commands
 
-4. **Use `anysite dataset guide`** for comprehensive YAML configuration reference:
-   ```bash
-   anysite dataset guide                       # full reference
-   anysite dataset guide --section sources     # specific section
-   anysite dataset guide --example basic       # complete example config
-   anysite dataset guide --list                # list all sections and examples
-   anysite dataset guide --json                # structured JSON for agents
-   ```
-
 ## Quick Start Checklist
 
 Before any data collection task:
@@ -165,21 +65,6 @@ anysite describe                          # List all endpoints
 anysite describe --search "company"       # Search by keyword
 anysite describe /api/linkedin/company    # Full details: input params + output fields
 ```
-
-`anysite describe` expands nested fields with dot-notation, showing the full object/array structure:
-
-```
-Output fields (15):
-    name                           string
-    urn                            object
-      .type                        string
-      .value                       string
-    experience                     array[object]
-      .title                       string
-      .company_urn                 string
-```
-
-Use these dot-notation paths (e.g., `urn.value`) in `dependency.field`, `--fields`, and `db_load.fields`.
 
 ## Prerequisites
 
@@ -564,12 +449,10 @@ Use `anysite describe --search <keyword>` for more endpoints.
 
 ## Key Patterns
 
-- **Output formats**: `--format json|jsonl|csv|table` (for data pipeline commands like `db query`, `dataset query`, `llm summarize`)
-- **JSON envelope**: `--json` flag on management commands (`db list`, `config list`, `dataset status`, etc.) — auto-enabled in pipes
+- **Output formats**: `--format json|jsonl|csv|table`
 - **Field selection**: `--fields "name,headline,urn.value"` (dot-notation for nested)
 - **Error handling**: `--on-error stop|skip|retry`
 - **Config priority**: CLI args > ENV vars > `~/.anysite/config.yaml` > defaults
-- **Global flags**: `--human` (force human output), `--non-interactive` (disable prompts), `--debug`, `--no-color`
 
 ## References
 
