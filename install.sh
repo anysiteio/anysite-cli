@@ -201,9 +201,7 @@ do_install() {
     # Step 1: Ensure uv is available
     ensure_uv
 
-    # Step 2: Clear stale cache and install anysite-cli
-    uv cache clean "$PACKAGE_NAME" &>/dev/null || true
-
+    # Step 2: Install anysite-cli
     local spec
     spec="$(build_package_spec)"
 
@@ -250,8 +248,6 @@ do_upgrade() {
     echo ""
 
     ensure_uv
-
-    uv cache clean "$PACKAGE_NAME" &>/dev/null || true
 
     local spec
     spec="$(build_package_spec)"
