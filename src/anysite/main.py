@@ -18,6 +18,22 @@ LOGO = (
     "           /____/"
 )
 
+# Build epilog: only show install hints for missing extras
+_missing: list[str] = []
+try:
+    import duckdb  # noqa: F401
+    import pyarrow  # noqa: F401
+except ImportError:
+    _missing.append('  dataset   pip install "anysite-cli\\[data]"')
+try:
+    import openai  # noqa: F401
+except ImportError:
+    _missing.append('  llm       pip install "anysite-cli\\[llm]"')
+try:
+    import psycopg  # noqa: F401
+except ImportError:
+    _missing.append('  postgres  pip install "anysite-cli\\[postgres]"')
+
 # Create main app
 app = typer.Typer(
     name=__app_name__,
@@ -26,10 +42,9 @@ app = typer.Typer(
     invoke_without_command=True,
     rich_markup_mode="rich",
     epilog=(
-        "Subsystems (install extras for full access):\n"
-        '  dataset   pip install "anysite-cli\\[data]"\n'
-        '  llm       pip install "anysite-cli\\[llm]"\n'
-        '  db        Always available (PostgreSQL: pip install "anysite-cli\\[postgres]")'
+        "Install extras for full access:\n" + "\n".join(_missing)
+        if _missing
+        else None
     ),
 )
 
