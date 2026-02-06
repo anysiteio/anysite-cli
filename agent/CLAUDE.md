@@ -13,6 +13,46 @@ You operate the **anysite CLI toolkit** — use the `/anysite-cli` skill for all
 - **Deliver insight, not just data.** After collecting, summarize findings. Highlight patterns, outliers, notable results. The user asked for data because they want to make a decision — help them get there.
 - **Be proactive about next steps.** After delivering results, suggest logical follow-ups: "Want me to enrich these with seniority level?", "I can set this up as a weekly pipeline", "Should I load this into your database?"
 
+## Agent Protocol
+
+anysite CLI auto-detects when called from a pipe/subprocess (non-TTY) and returns structured JSON output. Use the `ok` field for success/failure, `error.code` for programmatic error handling, and `error.suggestions` for recovery steps.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Usage error (invalid args, missing params) |
+| 3 | Authentication failed |
+| 4 | Resource not found |
+| 5 | Network / timeout / rate limit |
+
+### Error Codes
+
+| Error code | Exit | Retryable | Trigger |
+|------------|------|-----------|---------|
+| `AUTH_FAILED` | 3 | no | Invalid/expired API key |
+| `RATE_LIMIT` | 5 | yes | Too many requests |
+| `NOT_FOUND` | 4 | no | Resource not found |
+| `VALIDATION_ERROR` | 2 | no | Bad input parameters |
+| `SERVER_ERROR` | 1 | yes | API server error |
+| `NETWORK_ERROR` | 5 | yes | Connection failure |
+| `TIMEOUT` | 5 | yes | Request timeout |
+| `CONNECTION_NOT_FOUND` | 4 | no | DB connection not found |
+| `DATASET_ERROR` | 1 | no | Dataset operation error |
+| `SOURCE_NOT_FOUND` | 4 | no | Source not found in dataset |
+| `CONFIG_ERROR` | 2 | no | LLM configuration error |
+| `LLM_PROVIDER_ERROR` | 1 | yes | LLM provider failure |
+
+### JSON Envelope
+
+**Success:** `{"ok": true, "result": {...}, "hints": [{"action": "...", "command": "..."}], "meta": {"version": "..."}}`
+
+**Error:** `{"ok": false, "error": {"code": "...", "message": "...", "retryable": false, "suggestions": [...]}, "meta": {"version": "..."}}`
+
+Use `--json` to force JSON in a terminal. Use `--human` to force human-readable output in pipes.
+
 ## Workflow
 
 ### 1. Understand the Data Need
@@ -49,6 +89,18 @@ anysite describe                             # List ALL available endpoints
 anysite describe --search "<keyword>"        # Search by keyword (linkedin, company, user, etc.)
 anysite describe /api/linkedin/company       # Inspect specific endpoint: input params + output fields
 ```
+
+`anysite describe` shows nested object/array structure with dot-notation. For example:
+```
+Output fields (15):
+    name                           string
+    urn                            object
+      .type                        string
+      .value                       string
+    experience                     array[object]
+      .title                       string
+```
+Use these dot-notation paths (e.g., `urn.value`) in `dependency.field`, `--fields`, and `db_load.fields`.
 
 Map the data need to specific endpoints. Common chains:
 - Search → Detail (find entities, then get full profiles)
@@ -359,3 +411,12 @@ For full CLI syntax, YAML schema, all options, and advanced configuration — in
 - LLM enrichment configuration
 - Database operations, discovery (`anysite db discover`), and catalog (`anysite db catalog`)
 - Endpoint discovery commands
+
+Use the built-in dataset guide for comprehensive YAML reference:
+```bash
+anysite dataset guide                        # full reference
+anysite dataset guide --section sources      # specific section
+anysite dataset guide --example advanced     # complete example config
+anysite dataset guide --list                 # list all sections and examples
+anysite dataset guide --json                 # structured JSON for agents
+```

@@ -83,8 +83,23 @@ def _simplify_type(schema: dict[str, Any]) -> str:
     return schema.get("type", "object")
 
 
-def _extract_properties(spec: dict[str, Any], schema: dict[str, Any]) -> dict[str, str]:
-    """Extract flat field -> type mapping from a resolved schema."""
+def _extract_properties(
+    spec: dict[str, Any],
+    schema: dict[str, Any],
+    *,
+    prefix: str = "",
+    max_depth: int = 3,
+    _depth: int = 0,
+) -> dict[str, str]:
+    """Extract field -> type mapping, expanding nested objects with dot-notation.
+
+    Nested object fields are expanded recursively up to ``max_depth`` levels.
+    For example, ``urn`` (object with ``type`` and ``value``) becomes::
+
+        {"urn": "object", "urn.type": "string", "urn.value": "string"}
+
+    Array items with object type use ``field[].subfield`` notation.
+    """
     schema = _resolve_schema(spec, schema)
 
     # Handle array of objects (most API responses)
@@ -94,8 +109,38 @@ def _extract_properties(spec: dict[str, Any], schema: dict[str, Any]) -> dict[st
     properties = schema.get("properties", {})
     result: dict[str, str] = {}
     for field_name, field_schema in properties.items():
-        resolved_field = _resolve_schema(spec, field_schema)
-        result[field_name] = _simplify_type(resolved_field)
+        resolved = _resolve_schema(spec, field_schema)
+        field_type = _simplify_type(resolved)
+        full_name = f"{prefix}{field_name}"
+
+        if field_type == "object" and "properties" in resolved and _depth < max_depth:
+            result[full_name] = "object"
+            result.update(
+                _extract_properties(
+                    spec,
+                    resolved,
+                    prefix=f"{full_name}.",
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+            )
+        elif field_type == "array" and "items" in resolved and _depth < max_depth:
+            items = _resolve_schema(spec, resolved["items"])
+            if items.get("type") == "object" and "properties" in items:
+                result[full_name] = "array[object]"
+                result.update(
+                    _extract_properties(
+                        spec,
+                        items,
+                        prefix=f"{full_name}[].",
+                        max_depth=max_depth,
+                        _depth=_depth + 1,
+                    )
+                )
+            else:
+                result[full_name] = f"array[{_simplify_type(items)}]"
+        else:
+            result[full_name] = field_type
     return result
 
 

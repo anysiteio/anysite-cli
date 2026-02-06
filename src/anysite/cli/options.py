@@ -14,9 +14,18 @@ from anysite.output.formatters import OutputFormat
 FormatOption = Annotated[
     OutputFormat,
     typer.Option(
-        "--format", "-f",
+        "--format",
+        "-f",
         help="Output format",
         case_sensitive=False,
+    ),
+]
+
+JsonOutputOption = Annotated[
+    bool,
+    typer.Option(
+        "--json",
+        help="Output as machine-readable JSON (for agents and scripts)",
     ),
 ]
 
@@ -31,7 +40,8 @@ FieldsOption = Annotated[
 OutputOption = Annotated[
     Path | None,
     typer.Option(
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Save output to file",
     ),
 ]
@@ -39,7 +49,8 @@ OutputOption = Annotated[
 QuietOption = Annotated[
     bool,
     typer.Option(
-        "--quiet", "-q",
+        "--quiet",
+        "-q",
         help="Suppress non-data output",
     ),
 ]
@@ -140,7 +151,8 @@ StdinOption = Annotated[
 ParallelOption = Annotated[
     int,
     typer.Option(
-        "--parallel", "-j",
+        "--parallel",
+        "-j",
         help="Number of parallel requests",
         rich_help_panel="Batch Input",
     ),

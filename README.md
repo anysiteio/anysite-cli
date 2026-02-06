@@ -4,17 +4,17 @@
 
 # Anysite CLI
 
-A command-line toolkit that gives AI agents and humans full control over web data — from extraction to analysis to database loading — without flooding the context window.
+A command-line tool designed for AI agents to collect, analyze, and store web data — with full support for humans too.
 
-**Built for agents.** Structured JSON/CSV/JSONL output, schema-driven endpoint discovery (`anysite describe`), batch processing with rate limiting, and quiet mode for piping. An agent can discover 118+ endpoints, collect data, run SQL queries, and load results into a database — all through a single CLI, no custom code required.
+**Agent-native protocol.** Auto-detects pipes and subprocesses, switches to structured JSON output. Discovery payload on first run, machine-readable exit codes, error codes with `retryable` flag and `suggestions`, next-step hints on every command. Zero configuration for agents — just call the binary.
+
+**Self-describing API.** 118+ endpoints with `anysite describe`: input parameters, output fields with nested object/array expansion, dot-notation paths for dependency chains. An agent discovers the schema, plans collection, and executes — no documentation lookup needed.
 
 **Declarative data pipelines.** Define multi-source collection workflows in YAML: dependency chains between sources, union merges, incremental collection that skips already-fetched data, per-source transforms and exports, automatic topological execution. One `anysite dataset collect` replaces hundreds of lines of scripting.
 
 **LLM analysis without burning tokens.** Offload enrichment, classification, summarization, and deduplication to cheaper LLMs (OpenAI, Anthropic). Results are cached in SQLite — repeat runs cost nothing. Agents keep their context window for reasoning, not data crunching.
 
 **Database-ready output.** Auto-infer schemas from JSON, create tables, and load into SQLite or PostgreSQL with a single command. Foreign keys are linked automatically via provenance tracking. Diff-based incremental sync keeps your database up to date without full reloads.
-
-**Snapshot diffs, scheduling, and monitoring.** Compare collection snapshots to track what changed. Generate cron or systemd schedules. Get webhook notifications on success or failure. Full run history with per-run logs.
 
 Supports **LinkedIn** (profiles, companies, jobs, Sales Navigator, email lookup), **Instagram** (profiles, posts, reels, comments), **Twitter/X**, **Reddit**, **YouTube** (channels, videos, subtitles), **Y Combinator**, **SEC EDGAR**, **GitHub**, **Amazon**, **Google News**, **Trustpilot**, **TripAdvisor**, **Hacker News**, web page parsing, and [60+ more sources](https://anysite.io) via the Anysite API.
 
@@ -32,14 +32,109 @@ pip install "anysite-cli[postgres]"   # PostgreSQL support
 pip install "anysite-cli[all]"        # All optional dependencies
 ```
 
-Or install from source:
+## Agent Protocol
+
+anysite CLI is **agent-first**: it auto-detects when stdout is not a TTY (pipe, subprocess) and switches all output to structured JSON. No flags needed.
+
+### Discovery
+
+Run `anysite` with no arguments in a pipe to get a full discovery payload:
 
 ```bash
-git clone https://github.com/anysiteio/anysite-cli.git
-cd anysite-cli
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+anysite | jq '.result'
+```
+
+Returns:
+- `commands` — all available commands with descriptions and subcommands
+- `agent_protocol` — how auto-JSON, `--json`, `--human`, `--non-interactive` work
+- `output_schema` — success/error envelope format
+- `exit_codes` — machine-readable exit code meanings
+- `installed_extras` — which optional packages are available (`data`, `llm`, `postgres`)
+
+Discover API endpoints:
+
+```bash
+anysite describe                          # list all 118+ endpoints
+anysite describe --search "company"       # search by keyword
+anysite describe /api/linkedin/company    # input params + output fields with nested expansion
+```
+
+Nested fields are expanded with dot-notation:
+
+```
+Output fields (15):
+    name                           string
+    urn                            object
+      .type                        string
+      .value                       string
+    experience                     array[object]
+      .title                       string
+      .company_urn                 string
+```
+
+Use these paths in `--fields`, `dependency.field`, and `db_load.fields`.
+
+### JSON Envelope
+
+Every command in pipe mode returns a JSON envelope:
+
+**Success:**
+```json
+{
+  "ok": true,
+  "result": { ... },
+  "hints": [{"action": "Next step", "command": "anysite ..."}],
+  "meta": {"version": "0.2.0", "command": "anysite db add"}
+}
+```
+
+**Error:**
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "AUTH_FAILED",
+    "message": "Authentication failed",
+    "retryable": false,
+    "suggestions": ["Set API key: anysite config set api_key <key>"]
+  },
+  "meta": {"version": "0.2.0"}
+}
+```
+
+Check `ok` for success/failure. Use `error.code` for programmatic handling. Use `error.retryable` to decide whether to retry. Use `error.suggestions` and `hints` for next steps.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Usage error (invalid args, missing params) |
+| 3 | Authentication failed |
+| 4 | Resource not found |
+| 5 | Network / timeout / rate limit |
+
+### Output Mode Flags
+
+| Context | Default | Override |
+|---------|---------|----------|
+| Pipe / subprocess (no TTY) | JSON envelope | `--human` to force human text |
+| Terminal (TTY) | Human-readable Rich text | `--json` to force JSON envelope |
+
+`--non-interactive` disables interactive prompts (auto-enabled when stdin is not a TTY).
+
+### Hints
+
+Every command returns next-step hints — in JSON (`hints` array) and human mode (dim text on stderr). Agents discover follow-up commands without consulting documentation.
+
+### Built-in Guide
+
+```bash
+anysite dataset guide                        # full YAML config reference
+anysite dataset guide --section sources      # specific section
+anysite dataset guide --example advanced     # complete example config
+anysite dataset guide --json                 # structured JSON for agents
 ```
 
 ## Quick Start
@@ -96,25 +191,6 @@ anysite api /api/web/parse url=https://example.com
 
 # Y Combinator
 anysite api /api/yc/company company=anthropic
-```
-
-## Endpoint Discovery
-
-Browse and search all available API endpoints:
-
-```bash
-# List all endpoints
-anysite describe
-
-# Describe a specific endpoint (input params + output fields)
-anysite describe /api/linkedin/company
-anysite describe linkedin.user
-
-# Search by keyword
-anysite describe --search "company"
-
-# JSON output for scripts/agents
-anysite describe --json -q
 ```
 
 ## Output Formats
@@ -522,12 +598,15 @@ anysite config reset --force
 anysite [OPTIONS] COMMAND
 
 Options:
-  --api-key TEXT     API key (or set ANYSITE_API_KEY)
-  --base-url TEXT    API base URL
-  --debug            Enable debug output
-  --no-color         Disable colored output
-  --version, -v      Show version
-  --help             Show help
+  --api-key TEXT       API key (or set ANYSITE_API_KEY)
+  --base-url TEXT      API base URL
+  --debug              Enable debug output
+  --no-color           Disable colored output
+  --json               Force JSON envelope output (auto-enabled in pipes)
+  --human              Force human-readable output (override auto-JSON in pipes)
+  --non-interactive    Disable interactive prompts (auto-enabled when stdin is not a TTY)
+  --version, -v        Show version
+  --help               Show help
 ```
 
 ## Claude Code Skill

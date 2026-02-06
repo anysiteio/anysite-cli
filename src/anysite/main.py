@@ -22,8 +22,15 @@ LOGO = (
 app = typer.Typer(
     name=__app_name__,
     help="Web data extraction for humans and AI agents",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
     rich_markup_mode="rich",
+    epilog=(
+        "Subsystems (install extras for full access):\n"
+        '  dataset   pip install "anysite-cli\\[data]"\n'
+        '  llm       pip install "anysite-cli\\[llm]"\n'
+        '  db        Always available (PostgreSQL: pip install "anysite-cli\\[postgres]")'
+    ),
 )
 
 # Add subcommands
@@ -34,6 +41,8 @@ state: dict[str, str | bool | None] = {
     "api_key": None,
     "base_url": None,
     "debug": False,
+    "non_interactive": False,
+    "human": False,
 }
 
 
@@ -67,8 +76,9 @@ def _logo_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     api_key: Annotated[
         str | None,
         typer.Option(
@@ -99,6 +109,20 @@ def main(
             help="Disable colored output",
         ),
     ] = False,
+    non_interactive: Annotated[
+        bool,
+        typer.Option(
+            "--non-interactive",
+            help="Disable interactive prompts (fail fast instead of waiting for input)",
+        ),
+    ] = False,
+    human: Annotated[
+        bool,
+        typer.Option(
+            "--human",
+            help="Force human-readable output (override auto-JSON in pipes)",
+        ),
+    ] = False,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -120,24 +144,43 @@ def main(
     ] = None,
 ) -> None:
     """Web data extraction for humans and AI agents."""
+    import sys as _sys
+
     # Store global options
     state["api_key"] = api_key
     state["base_url"] = base_url
     state["debug"] = debug
+    state["non_interactive"] = non_interactive or not _sys.stdin.isatty()
+    state["human"] = human
 
     if no_color:
         import os
 
         os.environ["NO_COLOR"] = "1"
 
+    # No subcommand → discovery JSON (agent) or help text (human)
+    if ctx.invoked_subcommand is None:
+        is_real_pipe = False
+        if not human:
+            try:
+                _sys.stdout.fileno()
+                is_real_pipe = not _sys.stdout.isatty()
+            except (AttributeError, OSError):
+                pass
+        if is_real_pipe:
+            from anysite.cli.discovery import build_discovery_payload
+
+            typer.echo(json.dumps(build_discovery_payload(ctx), indent=2))
+        else:
+            typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
 
 @app.command("describe")
 def describe(
     command: Annotated[
         str | None,
-        typer.Argument(
-            help="Endpoint to describe (e.g., 'linkedin.user', '/api/linkedin/user')"
-        ),
+        typer.Argument(help="Endpoint to describe (e.g., 'linkedin.user', '/api/linkedin/user')"),
     ] = None,
     search: Annotated[
         str | None,
@@ -168,6 +211,9 @@ def describe(
     import json as json_mod
 
     from anysite.api.schemas import get_schema, list_endpoints, search_endpoints
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
 
     # Search mode
     if search is not None:
@@ -204,9 +250,7 @@ def describe(
                     console.print(f"  {ep['path']}")
                 else:
                     console.print(f"  {ep['path']:<45} [dim]{ep['description']}[/dim]")
-            console.print(
-                "\n[dim]Use 'anysite describe <endpoint>' for details[/dim]"
-            )
+            console.print("\n[dim]Use 'anysite describe <endpoint>' for details[/dim]")
         return
 
     # Describe a specific endpoint
@@ -237,9 +281,20 @@ def describe(
 
         output_fields = schema.get("output", {})
         if output_fields:
-            console.print(f"[bold]Output fields ({len(output_fields)}):[/bold]")
+            # Count only top-level fields (no dots) for the header
+            top_level = sum(1 for n in output_fields if "." not in n)
+            console.print(f"[bold]Output fields ({top_level}):[/bold]")
             for name, ftype in output_fields.items():
-                console.print(f"    {name:<30} [dim]{ftype}[/dim]")
+                depth = name.count(".")
+                if depth > 0:
+                    indent = "    " + "  " * depth
+                    short = name.rsplit(".", 1)[-1]
+                    pad = max(1, 28 - depth * 2)
+                    console.print(
+                        f"{indent}[dim].{short:<{pad}}[/dim] [dim]{ftype}[/dim]"
+                    )
+                else:
+                    console.print(f"    {name:<30} [dim]{ftype}[/dim]")
 
 
 # Schema management subcommand
@@ -248,26 +303,66 @@ app.add_typer(schema_app, name="schema")
 
 
 @schema_app.command("update")
-def schema_update() -> None:
+def schema_update(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
+) -> None:
     """Fetch OpenAPI spec and update local schema cache.
 
     Downloads the API specification, resolves all references,
     and saves a compact cache to ~/.anysite/schema.json.
+
+    \b
+    Examples:
+      anysite schema update
+      anysite schema update --json
     """
     from anysite.api.schemas import OPENAPI_URL, fetch_and_parse_openapi, save_cache
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
 
     console = Console()
-    console.print(f"Fetching OpenAPI spec from {OPENAPI_URL}...")
+    if not json_output:
+        console.print(f"Fetching OpenAPI spec from {OPENAPI_URL}...")
 
     try:
         data = fetch_and_parse_openapi()
     except Exception as e:
+        if json_output:
+            from anysite.cli.json_output import json_error
+
+            json_error("SCHEMA_FETCH_ERROR", str(e), retryable=True)
         console.print(f"[red]Error fetching spec:[/red] {e}")
         raise typer.Exit(1) from e
 
     cache_path = save_cache(data)
     count = len(data.get("endpoints", {}))
+
+    hints = [
+        ("List all endpoints", "anysite describe"),
+        ("Search endpoints", 'anysite describe --search "<keyword>"'),
+        ("View endpoint detail", "anysite describe /api/linkedin/user"),
+        ("Make an API call", "anysite api /api/linkedin/user user=satyanadella"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"endpoints": count, "cache_path": str(cache_path)},
+            hints=hints,
+            command="anysite schema update",
+        )
+        return
+
     console.print(f"[green]✓[/green] Cached {count} endpoints to {cache_path}")
+
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints)
 
 
 @app.command(

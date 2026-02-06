@@ -1,9 +1,12 @@
 """Rich console configuration."""
 
+import sys
+
 from rich.console import Console
 
-# Main console for standard output
-console = Console()
+# Main console — auto-disable Rich markup when stdout is not a terminal (piped).
+# This ensures clean output for agents and scripts.
+console = Console(force_terminal=sys.stdout.isatty())
 
 # Error console for stderr
 error_console = Console(stderr=True, style="bold red")
