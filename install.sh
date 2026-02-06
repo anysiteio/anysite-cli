@@ -201,7 +201,9 @@ do_install() {
     # Step 1: Ensure uv is available
     ensure_uv
 
-    # Step 2: Install anysite-cli
+    # Step 2: Clear stale cache and install anysite-cli
+    uv cache clean "$PACKAGE_NAME" &>/dev/null || true
+
     local spec
     spec="$(build_package_spec)"
 
@@ -209,7 +211,7 @@ do_install() {
     info "Installing ${spec}..."
     echo ""
 
-    if ! uv tool install "$spec" --python ">=${MIN_PYTHON}" 2>&1; then
+    if ! uv tool install "$spec" --python ">=${MIN_PYTHON}" --refresh 2>&1; then
         echo ""
         error "Installation failed"
         echo ""
@@ -249,6 +251,8 @@ do_upgrade() {
 
     ensure_uv
 
+    uv cache clean "$PACKAGE_NAME" &>/dev/null || true
+
     local spec
     spec="$(build_package_spec)"
 
@@ -256,19 +260,7 @@ do_upgrade() {
     info "Upgrading ${spec}..."
     echo ""
 
-    # uv tool upgrade only works if already installed
-    if uv tool list 2>/dev/null | grep -q "$PACKAGE_NAME"; then
-        if [[ -n "$EXTRAS" || -n "$VERSION" ]]; then
-            # Reinstall with new spec
-            uv tool install "$spec" --python ">=${MIN_PYTHON}" --force 2>&1
-        else
-            uv tool upgrade "$PACKAGE_NAME" 2>&1
-        fi
-    else
-        warn "Not installed yet, installing..."
-        echo ""
-        uv tool install "$spec" --python ">=${MIN_PYTHON}" 2>&1
-    fi
+    uv tool install "$spec" --python ">=${MIN_PYTHON}" --force --refresh 2>&1
 
     export PATH="$HOME/.local/bin:$PATH"
 
