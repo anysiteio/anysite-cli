@@ -39,52 +39,6 @@ warn()    { printf "${YELLOW}${BOLD}==>${NC} ${YELLOW}%s${NC}\n" "$1"; }
 error()   { printf "${RED}${BOLD}==>${NC} ${RED}%s${NC}\n" "$1" >&2; }
 dim()     { printf "    ${DIM}%s${NC}\n" "$1"; }
 
-# --- Parse arguments ---
-
-ACTION="install"
-EXTRAS="all"
-VERSION=""
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --uninstall)  ACTION="uninstall"; shift ;;
-        --upgrade)    ACTION="upgrade"; shift ;;
-        --extras)     EXTRAS="${2:-}"; shift 2 ;;
-        --version)    VERSION="${2:-}"; shift 2 ;;
-        --help|-h)    ACTION="help"; shift ;;
-        *) error "Unknown option: $1"; exit 1 ;;
-    esac
-done
-
-# --- Help ---
-
-usage() {
-    cat <<EOF
-
-  ${BOLD}Anysite CLI Installer${NC}
-
-  ${BOLD}Usage:${NC}
-    curl -fsSL https://anysite.io/install.sh | bash
-    curl -fsSL https://anysite.io/install.sh | bash -s -- [options]
-
-  ${BOLD}Options:${NC}
-    --extras <name>   Extras to install: all (default), data, llm, db, none
-    --version <ver>   Install specific version (e.g., 0.3.0)
-    --upgrade         Upgrade to latest version
-    --uninstall       Remove anysite CLI
-    --help            Show this help
-
-  ${BOLD}Examples:${NC}
-    bash install.sh                        # Full install (all extras)
-    bash install.sh --extras none          # Minimal install
-    bash install.sh --extras data          # Only dataset pipelines
-    bash install.sh --version 0.3.0        # Specific version
-    bash install.sh --upgrade              # Upgrade existing install
-    bash install.sh --uninstall            # Remove
-
-EOF
-}
-
 # --- Helpers ---
 
 ensure_uv() {
@@ -96,15 +50,20 @@ ensure_uv() {
     info "Installing uv (fast Python package manager)..."
     echo ""
 
-    if ! curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1; then
+    local tmpfile
+    tmpfile="$(mktemp)"
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$tmpfile"; then
+        rm -f "$tmpfile"
         echo ""
-        error "Failed to install uv"
+        error "Failed to download uv installer"
         echo ""
         echo "  Install uv manually:"
         dim "https://docs.astral.sh/uv/getting-started/installation/"
         echo ""
         exit 1
     fi
+    sh "$tmpfile"
+    rm -f "$tmpfile"
 
     # Add uv to PATH for this session
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -209,7 +168,7 @@ do_install() {
     info "Installing ${spec}..."
     echo ""
 
-    if ! uv tool install "$spec" --python ">=${MIN_PYTHON}" --refresh 2>&1; then
+    if ! uv tool install "$spec" --python ">=${MIN_PYTHON}" --refresh; then
         echo ""
         error "Installation failed"
         echo ""
@@ -256,7 +215,7 @@ do_upgrade() {
     info "Upgrading ${spec}..."
     echo ""
 
-    uv tool install "$spec" --python ">=${MIN_PYTHON}" --force --refresh 2>&1
+    uv tool install "$spec" --python ">=${MIN_PYTHON}" --force --refresh
 
     export PATH="$HOME/.local/bin:$PATH"
 
@@ -278,7 +237,7 @@ do_uninstall() {
 
     if command -v uv &>/dev/null; then
         info "Removing anysite-cli..."
-        uv tool uninstall "$PACKAGE_NAME" 2>&1 || true
+        uv tool uninstall "$PACKAGE_NAME" || true
     else
         # Try removing the binary directly
         local bin="$HOME/.local/bin/$COMMAND_NAME"
@@ -295,11 +254,57 @@ do_uninstall() {
     echo ""
 }
 
-# --- Main ---
+usage() {
+    cat <<EOF
 
-case "$ACTION" in
-    install)    do_install ;;
-    upgrade)    do_upgrade ;;
-    uninstall)  do_uninstall ;;
-    help)       usage ;;
-esac
+  ${BOLD}Anysite CLI Installer${NC}
+
+  ${BOLD}Usage:${NC}
+    curl -fsSL https://anysite.io/install.sh | bash
+    curl -fsSL https://anysite.io/install.sh | bash -s -- [options]
+
+  ${BOLD}Options:${NC}
+    --extras <name>   Extras to install: all (default), data, llm, db, none
+    --version <ver>   Install specific version (e.g., 0.3.0)
+    --upgrade         Upgrade to latest version
+    --uninstall       Remove anysite CLI
+    --help            Show this help
+
+  ${BOLD}Examples:${NC}
+    bash install.sh                        # Full install (all extras)
+    bash install.sh --extras none          # Minimal install
+    bash install.sh --extras data          # Only dataset pipelines
+    bash install.sh --version 0.3.0        # Specific version
+    bash install.sh --upgrade              # Upgrade existing install
+    bash install.sh --uninstall            # Remove
+
+EOF
+}
+
+# --- Main (stdin closed to prevent pipe conflicts with curl|bash) ---
+
+main() {
+    local ACTION="install"
+    local EXTRAS="all"
+    local VERSION=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --uninstall)  ACTION="uninstall"; shift ;;
+            --upgrade)    ACTION="upgrade"; shift ;;
+            --extras)     EXTRAS="${2:-}"; shift 2 ;;
+            --version)    VERSION="${2:-}"; shift 2 ;;
+            --help|-h)    ACTION="help"; shift ;;
+            *) error "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+
+    case "$ACTION" in
+        install)    do_install ;;
+        upgrade)    do_upgrade ;;
+        uninstall)  do_uninstall ;;
+        help)       usage ;;
+    esac
+}
+
+main "$@" </dev/null
