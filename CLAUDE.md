@@ -60,6 +60,11 @@ anysite dataset diff dataset.yaml --source profiles --key urn.value --from 2026-
 anysite dataset diff dataset.yaml --source profiles --key urn.value --fields "name,headline,follower_count"
 anysite dataset reset-cursor dataset.yaml
 anysite dataset reset-cursor dataset.yaml --source profiles
+anysite dataset guide
+anysite dataset guide --section sources
+anysite dataset guide --example advanced
+anysite dataset guide --list
+anysite dataset guide --json
 
 # LLM commands
 anysite llm setup
@@ -122,13 +127,16 @@ When releasing a new version:
 **CLI Framework**: Typer with Rich for terminal output.
 
 **Module Structure**:
-- `main.py` - Typer app entry point. Registers `api`, `describe`, `schema`, `config`, `dataset` commands. Handles global options (`--api-key`, `--debug`, `--no-color`).
+- `main.py` - Typer app entry point. Registers `api`, `describe`, `schema`, `config`, `dataset` commands. Handles global options (`--api-key`, `--debug`, `--no-color`, `--json`, `--human`, `--non-interactive`). When invoked with no subcommand in a non-TTY pipe, returns a JSON discovery payload via `build_discovery_payload()`.
 - `cli/config.py` - Config management commands (set, get, list, path, init, reset)
 - `cli/executor.py` - Async execution wrappers: `run_search_command()` for list/search endpoints, `run_single_command()` for single-item + batch
 - `cli/options.py` - Reusable Typer option type aliases (FormatOption, FieldsOption, etc.) and `ErrorHandling` enum
+- `cli/exit_codes.py` - Standard exit codes: `EXIT_SUCCESS` (0), `EXIT_ERROR` (1), `EXIT_USAGE` (2), `EXIT_AUTH` (3), `EXIT_NOT_FOUND` (4), `EXIT_NETWORK` (5)
+- `cli/json_output.py` - `json_response()`, `json_error()`, `json_error_from_exception()`, `resolve_json_output()`, `print_hints()`, `is_non_interactive()`: structured JSON envelope output with auto-detection of pipe/TTY
+- `cli/discovery.py` - `build_discovery_payload()`: introspects Typer app to produce JSON discovery payload with commands, protocol, exit codes, and installed extras
 - `api/client.py` - Async HTTP client (`AnysiteClient`) with retry logic, exponential backoff, auth via `access-token` header
-- `api/errors.py` - Exception hierarchy (AuthenticationError, RateLimitError, NotFoundError, ValidationError, ServerError, NetworkError, TimeoutError)
-- `api/schemas.py` - OpenAPI schema cache: fetch spec, resolve `$ref`, extract input/output, search/list endpoints, auto-convert CLI arg types
+- `api/errors.py` - Exception hierarchy (AuthenticationError, RateLimitError, NotFoundError, ValidationError, ServerError, NetworkError, TimeoutError). Each has `error_code`, `exit_code`, `retryable`, `suggestions`, and `to_dict()` for structured JSON error output
+- `api/schemas.py` - OpenAPI schema cache: fetch spec, resolve `$ref`, extract input/output, search/list endpoints, auto-convert CLI arg types. `_extract_properties()` recursively expands nested objects/arrays with dot-notation keys (e.g., `urn.value`, `experience[].title`) up to `max_depth=3`
 - `config/settings.py` - Pydantic Settings with priority: CLI > ENV > config file > defaults
 - `config/paths.py` - Config/cache file paths (`~/.anysite/config.yaml`, `~/.anysite/schema.json`)
 - `output/formatters.py` - JSON, JSONL, CSV, Table formatters with field selection and exclusion
@@ -152,12 +160,13 @@ When releasing a new version:
 - `dataset/scheduler.py` - `ScheduleGenerator`: crontab and systemd timer unit generation from cron expressions
 - `dataset/notifications.py` - `WebhookNotifier`: POST to webhook URLs on collection complete/failure
 - `dataset/differ.py` - `DatasetDiffer`: compare two Parquet snapshots using DuckDB (added/removed/changed records). Supports dot-notation keys via `json_extract_string()`. `DiffResult` dataclass, `format_diff_table()` and `format_diff_records()` formatters with output field filtering
-- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`
+- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`, `guide`
 - `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference, diff-based incremental sync (`db_load.key` + `db_load.sync: full|append`). Supports diff-based incremental sync via `db_load.key` and `--snapshot` for loading specific dates
-- `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`
+- `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`. All inherit from `AnysiteError` with `error_code` and `exit_code` for structured error output
+- `dataset/guide.py` - Built-in dataset configuration guide: `GUIDE_SECTIONS` dict with `GuideSection` dataclasses covering all source types, params, dependencies, LLM, transforms, exports, db_load, storage, scheduling, notifications, incremental. `EXAMPLE_CONFIGS` dict with complete YAML examples. Used by `anysite dataset guide` command with `--section`, `--example`, `--list`, `--json` options
 - `llm/__init__.py` - `check_llm_deps()`, `load_llm_config()`, `get_api_key()` — verifies optional openai/anthropic are installed, loads LLM config from `~/.anysite/config.yaml`. `get_api_key()` resolves direct `api_key` first, then `api_key_env` fallback
 - `llm/models.py` - Dataclass models: `LLMProviderConfig` (with `api_key` direct + `api_key_env` fallback), `LLMConfig`, `LLMMessage`, `LLMResponse`, `StructuredSchema`, `ProcessorResult`
-- `llm/errors.py` - `LLMError`, `ConfigError`, `ProviderError`, `PromptError`
+- `llm/errors.py` - `LLMError`, `ConfigError`, `ProviderError`, `PromptError`. All inherit from `AnysiteError` with `error_code`, `exit_code`, and `retryable` for structured error output
 - `llm/providers.py` - `LLMProvider` ABC, `OpenAIProvider` (AsyncOpenAI, JSON Schema structured output), `AnthropicProvider` (AsyncAnthropic, system-prompt structured output), `create_provider()` factory
 - `llm/cache.py` - `LLMCache` SQLite cache at `~/.anysite/llm_cache.db` with SHA256 keys, WAL mode
 - `llm/prompts.py` - `PromptBuilder` with template/builtin support, `BUILTIN_PROMPTS` (summarize, classify, classify_auto_detect, match, deduplicate, enrich), `filter_record_fields()` with dot-notation
@@ -256,6 +265,16 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 
 **Credential Storage**: Both database passwords and LLM API keys support dual resolution — direct value (priority) with environment variable fallback. DB: `ConnectionConfig.get_password()` checks `password` then `password_env`. LLM: `get_api_key()` checks `api_key` then `api_key_env`. The `anysite db add --password` saves directly to `connections.yaml`; `anysite llm setup` saves directly to `config.yaml` when a key is pasted.
 
+**Agent Protocol**: The CLI is agent-first — it auto-detects when stdout is a pipe (non-TTY) and switches to structured JSON envelope output. Key components:
+- `resolve_json_output()` determines output mode: explicit `--json` flag > `--human` global flag > auto-detect via `stdout.isatty()`
+- JSON envelope: `{"ok": true, "result": ..., "hints": [...], "meta": {"version": "...", "command": "..."}}` for success; `{"ok": false, "error": {"code": "...", "message": "...", "retryable": ..., "suggestions": [...]}, "meta": ...}` for errors
+- Exit codes: 0 (success), 1 (error), 2 (usage), 3 (auth), 4 (not found), 5 (network/timeout/rate-limit)
+- Error codes: every exception has a machine-readable `error_code` (e.g., `AUTH_FAILED`, `RATE_LIMIT`, `CONNECTION_NOT_FOUND`, `DATASET_ERROR`, `LLM_PROVIDER_ERROR`) with `retryable` flag and `suggestions` list
+- Hints: every command returns next-step hints as `(action, command)` tuples, rendered in JSON envelope or dim text on stderr
+- `--human` global flag forces human-readable output even in pipes
+- `--non-interactive` disables interactive prompts (auto-enabled when stdin is not a TTY)
+- Discovery payload: `anysite` with no subcommand in a pipe returns a JSON payload listing all commands, protocol, exit codes, and installed extras via `build_discovery_payload()`
+
 ## Common CLI Options Pattern
 
 Reusable Typer option type aliases are defined in `cli/options.py`:
@@ -273,12 +292,12 @@ Reusable Typer option type aliases are defined in `cli/options.py`:
 ## Testing
 
 Tests are in `tests/` with subdirectories mirroring `src/anysite/`:
-- `test_cli/` — CLI commands
-- `test_api/` — API client
+- `test_cli/` — CLI commands, discovery payload, JSON output, exit codes
+- `test_api/` — API client, error codes and structured error output
 - `test_batch/` — Batch executor, rate limiter, input parser
 - `test_streaming/` — Progress and writer
 - `test_output/` — Formatters and templates
 - `test_utils/` — Field selection and retry
-- `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications, differ
+- `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications, differ, guide command
 - `test_db/` — Database adapters, schema inference, connection manager, operations, discovery engine (SQLite in-memory), catalog store, LLM description (mocked provider)
 - `test_llm/` — LLM cache, CLI commands, models, processor, prompts, providers

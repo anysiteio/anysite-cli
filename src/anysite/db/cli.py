@@ -13,19 +13,40 @@ from rich.table import Table
 from anysite.db.config import ConnectionConfig, DatabaseType, OnConflict
 from anysite.db.manager import ConnectionManager
 
-app = typer.Typer(help="Store API data in SQL databases")
+app = typer.Typer(
+    help="Store API data in SQL databases",
+    no_args_is_help=True,
+    epilog="Run 'anysite db <command> --help' for details on each command.",
+)
 
 
 def _get_manager() -> ConnectionManager:
     return ConnectionManager()
 
 
-def _get_config_or_exit(name: str) -> ConnectionConfig:
+def _get_config_or_exit(name: str, *, json_output: bool = False) -> ConnectionConfig:
     """Get a connection config by name or exit with error."""
     config = _get_manager().get(name)
     if config is None:
+        available = [c.name for c in _get_manager().list()]
+        if json_output:
+            from anysite.cli.json_output import json_error
+
+            json_error(
+                "CONNECTION_NOT_FOUND",
+                f"Connection '{name}' not found",
+                suggestions=[
+                    f"Available connections: {', '.join(available) or 'none'}",
+                    "Add one with: anysite db add <name> --type sqlite --path ./data.db",
+                ],
+            )
         typer.echo(f"Error: connection '{name}' not found", err=True)
-        typer.echo("Run 'anysite db list' to see available connections.", err=True)
+        if available:
+            typer.echo(f"Available: {', '.join(available)}", err=True)
+        else:
+            typer.echo(
+                "Add one with: anysite db add <name> --type sqlite --path ./data.db", err=True
+            )
         raise typer.Exit(1)
     return config
 
@@ -81,7 +102,17 @@ def add(
     ] = False,
     read_only: Annotated[
         bool,
-        typer.Option("--read-only", help="Force connection as read-only (prevents write operations)"),
+        typer.Option(
+            "--read-only", help="Force connection as read-only (prevents write operations)"
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Suppress non-data output"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
     ] = False,
 ) -> None:
     """Add a named database connection.
@@ -93,6 +124,10 @@ def add(
       anysite db add remote --type postgres --url-env DATABASE_URL
       anysite db add replica --type postgres --host replica.example.com --read-only
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     if password and password_env:
         typer.echo("Error: --password and --password-env are mutually exclusive", err=True)
         raise typer.Exit(1)
@@ -119,17 +154,85 @@ def add(
     manager = _get_manager()
     manager.add(config)
 
+    hints = [
+        ("Test connection", f"anysite db test {name}"),
+        ("View schema", f"anysite db schema {name}"),
+        ("Insert data", f"anysite db insert {name} --table <table> --stdin"),
+        ("Discover structure", f"anysite db discover {name}"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"name": name, "type": type.value},
+            hints=hints,
+            command="anysite db add",
+        )
+        return
+
     console = Console()
     console.print(f"[green]Added[/green] connection '{name}' ({type.value})")
     if password:
         console.print("[dim]Password saved in ~/.anysite/connections.yaml[/dim]")
 
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints, quiet=quiet)
+
 
 @app.command("list")
-def list_connections() -> None:
-    """List all saved database connections."""
+def list_connections(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
+) -> None:
+    """List all saved database connections.
+
+    \b
+    Examples:
+      anysite db list
+      anysite db list --json
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     manager = _get_manager()
     connections = manager.list()
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        if not connections:
+            json_response([], command="anysite db list")
+            return
+
+        items = []
+        for conn in connections:
+            entry: dict[str, Any] = {
+                "name": conn.name,
+                "type": conn.type.value,
+                "read_only": conn.read_only,
+            }
+            if conn.type in (DatabaseType.SQLITE, DatabaseType.DUCKDB):
+                entry["path"] = conn.path or ""
+            elif conn.url_env:
+                entry["url_env"] = conn.url_env
+            else:
+                if conn.host:
+                    entry["host"] = conn.host
+                if conn.port:
+                    entry["port"] = conn.port
+                if conn.database:
+                    entry["database"] = conn.database
+                if conn.user:
+                    entry["user"] = conn.user
+            items.append(entry)
+
+        json_response(items, command="anysite db list")
+        return
 
     if not connections:
         typer.echo("No connections configured.")
@@ -183,22 +286,59 @@ def test(
         str,
         typer.Argument(help="Connection name to test"),
     ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
-    """Test a database connection."""
-    _get_config_or_exit(name)
+    """Test a database connection.
+
+    \b
+    Examples:
+      anysite db test mydb
+      anysite db test mydb --json
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    _get_config_or_exit(name, json_output=json_output)
 
     console = Console()
-    console.print(f"Testing connection '{name}'...")
+
+    if not json_output:
+        console.print(f"Testing connection '{name}'...")
 
     manager = _get_manager()
     try:
         info = manager.test(name)
-        console.print(f"[green]Connected[/green] to {info.get('type', 'unknown')}")
-        for key, value in info.items():
-            console.print(f"  {key}: {value}")
     except Exception as e:
+        if json_output:
+            from anysite.cli.json_output import json_error
+
+            json_error("CONNECTION_FAILED", str(e))
         console.print(f"[red]Failed[/red]: {e}")
         raise typer.Exit(1) from None
+
+    hints = [
+        ("View schema", f"anysite db schema {name}"),
+        ("Run a query", f'anysite db query {name} --sql "SELECT 1"'),
+        ("Discover structure", f"anysite db discover {name}"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(info, hints=hints, command="anysite db test")
+        return
+
+    console.print(f"[green]Connected[/green] to {info.get('type', 'unknown')}")
+    for key, value in info.items():
+        console.print(f"  {key}: {value}")
+
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints, quiet=False)
 
 
 @app.command("remove")
@@ -211,11 +351,35 @@ def remove(
         bool,
         typer.Option("--force", "-f", help="Skip confirmation"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
-    """Remove a saved database connection."""
-    _get_config_or_exit(name)
+    """Remove a saved database connection.
+
+    \b
+    Examples:
+      anysite db remove mydb
+      anysite db remove mydb --force
+      anysite db remove mydb --json --force
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    _get_config_or_exit(name, json_output=json_output)
 
     if not force:
+        from anysite.cli.json_output import is_non_interactive
+
+        if is_non_interactive():
+            typer.echo(
+                f"Error: removing '{name}' requires confirmation. "
+                "Use --force to skip confirmation in non-interactive mode.",
+                err=True,
+            )
+            raise typer.Exit(1)
         confirm = typer.confirm(f"Remove connection '{name}'?")
         if not confirm:
             raise typer.Abort()
@@ -223,8 +387,27 @@ def remove(
     manager = _get_manager()
     manager.remove(name)
 
+    hints = [
+        ("List remaining connections", "anysite db list"),
+        ("Add new connection", "anysite db add <name> --type sqlite --path ./data.db"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"name": name, "removed": True},
+            hints=hints,
+            command="anysite db remove",
+        )
+        return
+
     console = Console()
     console.print(f"[green]Removed[/green] connection '{name}'")
+
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints, quiet=False)
 
 
 @app.command("info")
@@ -233,9 +416,54 @@ def info(
         str,
         typer.Argument(help="Connection name"),
     ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
-    """Show details about a database connection."""
-    config = _get_config_or_exit(name)
+    """Show details about a database connection.
+
+    \b
+    Examples:
+      anysite db info mydb
+      anysite db info mydb --json
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    config = _get_config_or_exit(name, json_output=json_output)
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        data: dict[str, Any] = {
+            "name": config.name,
+            "type": config.type.value,
+        }
+        if config.path:
+            data["path"] = config.path
+        if config.host:
+            data["host"] = config.host
+        if config.port:
+            data["port"] = config.port
+        if config.database:
+            data["database"] = config.database
+        if config.user:
+            data["user"] = config.user
+        if config.password_env:
+            data["password_env"] = config.password_env
+        if config.url_env:
+            data["url_env"] = config.url_env
+        if config.ssl:
+            data["ssl"] = config.ssl
+        if config.read_only:
+            data["read_only"] = config.read_only
+        if config.options:
+            data["options"] = config.options
+
+        json_response(data, command="anysite db info")
+        return
 
     console = Console()
     console.print(f"[bold]Connection: {config.name}[/bold]")
@@ -276,15 +504,24 @@ def schema(
         str | None,
         typer.Option("--table", "-t", help="Table to inspect"),
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
-    """Inspect database schema — list tables or show table columns.
+    """Inspect database schema -- list tables or show table columns.
 
     \b
     Examples:
       anysite db schema mydb                    # list all tables
       anysite db schema mydb --table users      # show columns of 'users'
+      anysite db schema mydb --json
     """
-    config = _get_config_or_exit(name)
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    config = _get_config_or_exit(name, json_output=json_output)
     manager = _get_manager()
     adapter = manager.get_adapter(config)
 
@@ -293,10 +530,27 @@ def schema(
     with adapter:
         if table:
             if not adapter.table_exists(table):
+                if json_output:
+                    from anysite.cli.json_output import json_error
+
+                    json_error(
+                        "TABLE_NOT_FOUND",
+                        f"Table '{table}' does not exist",
+                    )
                 typer.echo(f"Error: table '{table}' does not exist", err=True)
                 raise typer.Exit(1)
 
             columns = adapter.get_table_schema(table)
+
+            if json_output:
+                from anysite.cli.json_output import json_response
+
+                json_response(
+                    {"table": table, "columns": columns},
+                    command="anysite db schema",
+                )
+                return
+
             tbl = Table(title=f"Table: {table}")
             tbl.add_column("Column", style="bold")
             tbl.add_column("Type")
@@ -309,6 +563,25 @@ def schema(
         else:
             # List tables - adapter-agnostic via querying system tables
             tables = _list_tables(adapter, config.type)
+
+            if json_output:
+                from anysite.cli.json_output import json_response
+
+                hints = [
+                    ("View table detail", f"anysite db schema {name} --table <table>"),
+                    (
+                        "Query data",
+                        f'anysite db query {name} --sql "SELECT * FROM <table> LIMIT 10"',
+                    ),
+                    ("Discover", f"anysite db discover {name}"),
+                ]
+                json_response(
+                    {"tables": tables},
+                    hints=hints,
+                    command="anysite db schema",
+                )
+                return
+
             if not tables:
                 console.print("[dim]No tables found[/dim]")
                 return
@@ -318,6 +591,20 @@ def schema(
             for t in tables:
                 tbl.add_row(t)
             console.print(tbl)
+
+            from anysite.cli.json_output import print_hints
+
+            print_hints(
+                [
+                    ("View table detail", f"anysite db schema {name} --table <table>"),
+                    (
+                        "Query data",
+                        f'anysite db query {name} --sql "SELECT * FROM <table> LIMIT 10"',
+                    ),
+                    ("Discover", f"anysite db discover {name}"),
+                ],
+                quiet=False,
+            )
 
 
 def _list_tables(adapter: Any, db_type: DatabaseType) -> list[str]:
@@ -357,6 +644,10 @@ def create_table(
         bool,
         typer.Option("--dry-run", help="Show CREATE TABLE SQL without executing"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
     """Create a table with schema inferred from JSON data.
 
@@ -365,6 +656,10 @@ def create_table(
       echo '{"name":"test","age":30}' | anysite db create-table mydb --table users --stdin
       echo '{"id":1,"name":"test"}' | anysite db create-table mydb --table users --stdin --pk id --dry-run
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     import json
 
     from anysite.db.schema.inference import infer_table_schema
@@ -402,12 +697,12 @@ def create_table(
         typer.echo("Error: no valid JSON objects found in input", err=True)
         raise typer.Exit(1)
 
-    config = _get_config_or_exit(name)
+    config = _get_config_or_exit(name, json_output=json_output)
     manager = _get_manager()
     dialect = config.type.value
 
-    schema = infer_table_schema(table, rows)
-    sql_types = schema.to_sql_types(dialect)
+    inferred_schema = infer_table_schema(table, rows)
+    sql_types = inferred_schema.to_sql_types(dialect)
 
     safe_table = sanitize_table_name(table)
     col_defs = []
@@ -430,7 +725,27 @@ def create_table(
             typer.echo(f"Error: table '{table}' already exists", err=True)
             raise typer.Exit(1)
         adapter.create_table(table, sql_types, primary_key=pk)
-        console.print(f"[green]Created[/green] table '{table}' with {len(sql_types)} columns")
+
+    hints = [
+        ("Insert data", f"anysite db insert {name} --table {table} --stdin"),
+        ("View schema", f"anysite db schema {name} --table {table}"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"table": table, "columns": len(sql_types)},
+            hints=hints,
+            command="anysite db create-table",
+        )
+        return
+
+    console.print(f"[green]Created[/green] table '{table}' with {len(sql_types)} columns")
+
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints, quiet=False)
 
 
 # ── Data commands ──────────────────────────────────────────────────────
@@ -478,6 +793,10 @@ def insert(
         bool,
         typer.Option("--quiet", "-q", help="Suppress non-data output"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
     """Insert JSON data into a database table.
 
@@ -489,6 +808,10 @@ def insert(
       anysite api /api/linkedin/user user=satyanadella | anysite db insert mydb --table users --stdin
       anysite db insert mydb --table users --file data.jsonl
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     from anysite.db.operations.insert import insert_from_file, insert_from_stdin
 
     if not stdin and not file:
@@ -501,7 +824,7 @@ def insert(
 
     conflict_cols = [c.strip() for c in conflict_columns.split(",")] if conflict_columns else None
 
-    config = _get_config_or_exit(name)
+    config = _get_config_or_exit(name, json_output=json_output)
     manager = _get_manager()
     adapter = manager.get_adapter(config)
 
@@ -533,8 +856,27 @@ def insert(
                 quiet=quiet,
             )
 
+    hints = [
+        ("Query inserted data", f'anysite db query {name} --sql "SELECT * FROM {table} LIMIT 10"'),
+        ("View table schema", f"anysite db schema {name} --table {table}"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"table": table, "rows_inserted": count},
+            hints=hints,
+            command="anysite db insert",
+        )
+        return
+
     if not quiet:
         console.print(f"[green]Inserted[/green] {count} row(s) into '{table}'")
+
+        from anysite.cli.json_output import print_hints
+
+        print_hints(hints, quiet=quiet)
 
 
 @app.command("upsert")
@@ -575,8 +917,12 @@ def upsert(
         bool,
         typer.Option("--quiet", "-q", help="Suppress non-data output"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
 ) -> None:
-    """Upsert JSON data — insert or update on conflict.
+    """Upsert JSON data -- insert or update on conflict.
 
     Shorthand for `insert --on-conflict update --conflict-columns ...`.
 
@@ -585,6 +931,10 @@ def upsert(
       anysite api /api/linkedin/user user=satyanadella \\
         | anysite db upsert mydb --table users --conflict-columns linkedin_url --stdin
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     from anysite.db.operations.insert import insert_from_file, insert_from_stdin
 
     if not stdin and not file:
@@ -597,7 +947,7 @@ def upsert(
 
     conflict_cols = [c.strip() for c in conflict_columns.split(",")]
 
-    config = _get_config_or_exit(name)
+    config = _get_config_or_exit(name, json_output=json_output)
     manager = _get_manager()
     adapter = manager.get_adapter(config)
 
@@ -629,8 +979,27 @@ def upsert(
                 quiet=quiet,
             )
 
+    hints = [
+        ("Query upserted data", f'anysite db query {name} --sql "SELECT * FROM {table} LIMIT 10"'),
+        ("View table schema", f"anysite db schema {name} --table {table}"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"table": table, "rows_upserted": count},
+            hints=hints,
+            command="anysite db upsert",
+        )
+        return
+
     if not quiet:
         console.print(f"[green]Upserted[/green] {count} row(s) into '{table}'")
+
+        from anysite.cli.json_output import print_hints
+
+        print_hints(hints, quiet=quiet)
 
 
 # ── Query command ──────────────────────────────────────────────────────
@@ -783,6 +1152,10 @@ def discover(
       anysite db discover mydb --tables users,posts --sample-rows 10
       anysite db discover mydb --exclude-tables _migrations,_temp
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     import json as json_mod
 
     from anysite.db.discovery import DatabaseDiscoverer
@@ -843,6 +1216,17 @@ def discover(
             console.print(f"  {t.name}: {len(t.columns)} columns{row_info}{desc}")
         console.print(f"\n[dim]Catalog saved to {path}[/dim]")
 
+        from anysite.cli.json_output import print_hints
+
+        print_hints(
+            [
+                ("View catalog", f"anysite db catalog {name}"),
+                ("Query data", f'anysite db query {name} --sql "SELECT * FROM <table> LIMIT 10"'),
+                ("Export as JSON", f"anysite db catalog {name} --json"),
+            ],
+            quiet=quiet,
+        )
+
 
 @app.command("catalog")
 def catalog(
@@ -876,6 +1260,10 @@ def catalog(
       anysite db catalog mydb --table users         # show table detail
       anysite db catalog mydb --json                # JSON output for agents
     """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     import json as json_mod
 
     store = _get_catalog_store()
@@ -913,7 +1301,9 @@ def catalog(
     # Show specific catalog
     cat = store.load(name)
     if cat is None:
-        typer.echo(f"Error: no catalog for '{name}'. Run 'anysite db discover {name}' first.", err=True)
+        typer.echo(
+            f"Error: no catalog for '{name}'. Run 'anysite db discover {name}' first.", err=True
+        )
         raise typer.Exit(1)
 
     if table:

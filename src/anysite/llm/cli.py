@@ -12,7 +12,10 @@ from rich.console import Console
 from anysite.llm import check_llm_deps
 from anysite.llm.errors import ConfigError, LLMError
 
-app = typer.Typer(help="LLM-powered analysis of collected data")
+app = typer.Typer(
+    help="LLM-powered analysis of collected data",
+    epilog="Run 'anysite llm <command> --help' for details on each command.",
+)
 
 
 @app.callback()
@@ -77,9 +80,7 @@ def _get_provider_and_cache(
     pname = provider_name or llm_config.default_provider
 
     if pname not in llm_config.providers:
-        raise ConfigError(
-            f"Provider '{pname}' not configured. Run 'anysite llm setup' first."
-        )
+        raise ConfigError(f"Provider '{pname}' not configured. Run 'anysite llm setup' first.")
 
     pconfig = llm_config.providers[pname]
     api_key = get_api_key(pconfig)
@@ -162,7 +163,12 @@ def _read_prompt_file(prompt_file: Path | None) -> str | None:
 
 @app.command("setup")
 def setup() -> None:
-    """Configure LLM provider settings interactively."""
+    """Configure LLM provider settings interactively.
+
+    \b
+    Examples:
+      anysite llm setup
+    """
     import yaml
 
     from anysite.config.paths import ensure_config_dir, get_config_path
@@ -271,9 +277,7 @@ def summarize(
     provider: Annotated[str | None, typer.Option("--provider", help="LLM provider")] = None,
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
-    rate_limit: Annotated[
-        str | None, typer.Option("--rate-limit", help="Rate limit")
-    ] = None,
+    rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
     temperature: Annotated[
         float | None, typer.Option("--temperature", help="LLM temperature")
     ] = None,
@@ -293,13 +297,22 @@ def summarize(
     prompt_file: Annotated[
         Path | None, typer.Option("--prompt-file", help="Read prompt from file")
     ] = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show prompt without calling LLM")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show prompt without calling LLM")
+    ] = False,
     max_length: Annotated[int, typer.Option("--max-length", help="Max words in summary")] = 100,
     output_column: Annotated[
         str, typer.Option("--output-column", help="Column name for summary")
     ] = "summary",
 ) -> None:
-    """Summarize each record in a dataset source using an LLM."""
+    """Summarize each record in a dataset source using an LLM.
+
+    \b
+    Examples:
+      anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --format table
+      anysite llm summarize dataset.yaml --source posts --fields "text" --output summaries.json
+      anysite llm summarize dataset.yaml --source profiles --dry-run
+    """
     config = _load_dataset_config(config_path)
     records = _read_source_records(config, source)
 
@@ -384,8 +397,12 @@ def classify(
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
     rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
-    temperature: Annotated[float | None, typer.Option("--temperature", help="LLM temperature")] = None,
-    max_tokens: Annotated[int | None, typer.Option("--max-tokens", help="Max response tokens")] = None,
+    temperature: Annotated[
+        float | None, typer.Option("--temperature", help="LLM temperature")
+    ] = None,
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", help="Max response tokens")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Skip cache lookup")] = False,
     # Output
     format: Annotated[str, typer.Option("--format", "-f", help="Output format")] = "json",
@@ -394,12 +411,23 @@ def classify(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress")] = False,
     # Classify-specific
     prompt: Annotated[str | None, typer.Option("--prompt", help="Custom prompt")] = None,
-    prompt_file: Annotated[Path | None, typer.Option("--prompt-file", help="Prompt from file")] = None,
+    prompt_file: Annotated[
+        Path | None, typer.Option("--prompt-file", help="Prompt from file")
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show prompt only")] = False,
-    multi: Annotated[bool, typer.Option("--multi", help="Allow multiple categories per record")] = False,
+    multi: Annotated[
+        bool, typer.Option("--multi", help="Allow multiple categories per record")
+    ] = False,
     output_column: Annotated[str, typer.Option("--output-column", help="Column name")] = "category",
 ) -> None:
-    """Classify records into categories using an LLM."""
+    """Classify records into categories using an LLM.
+
+    \b
+    Examples:
+      anysite llm classify dataset.yaml --source posts --categories "positive,negative,neutral" --format table
+      anysite llm classify dataset.yaml --source posts --fields "text,headline" --output classified.json
+      anysite llm classify dataset.yaml --source profiles --dry-run
+    """
     config = _load_dataset_config(config_path)
     records = _read_source_records(config, source)
 
@@ -525,8 +553,12 @@ def match(
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
     rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
-    temperature: Annotated[float | None, typer.Option("--temperature", help="LLM temperature")] = None,
-    max_tokens: Annotated[int | None, typer.Option("--max-tokens", help="Max response tokens")] = None,
+    temperature: Annotated[
+        float | None, typer.Option("--temperature", help="LLM temperature")
+    ] = None,
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", help="Max response tokens")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Skip cache lookup")] = False,
     # Output
     format: Annotated[str, typer.Option("--format", "-f", help="Output format")] = "json",
@@ -536,12 +568,20 @@ def match(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress")] = False,
     # Match-specific
     prompt: Annotated[str | None, typer.Option("--prompt", help="Custom prompt")] = None,
-    prompt_file: Annotated[Path | None, typer.Option("--prompt-file", help="Prompt from file")] = None,
+    prompt_file: Annotated[
+        Path | None, typer.Option("--prompt-file", help="Prompt from file")
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show prompt only")] = False,
     top_k: Annotated[int, typer.Option("--top-k", help="Max matches per source-a record")] = 3,
     threshold: Annotated[float, typer.Option("--threshold", help="Min match score")] = 0.5,
 ) -> None:
-    """Match records between two dataset sources using an LLM."""
+    """Match records between two dataset sources using an LLM.
+
+    \b
+    Examples:
+      anysite llm match dataset.yaml --source-a profiles --source-b companies --top-k 3
+      anysite llm match dataset.yaml --source-a profiles --source-b companies --threshold 0.7 --format table
+    """
     config = _load_dataset_config(config_path)
     records_a = _read_source_records(config, source_a)
     records_b = _read_source_records(config, source_b)
@@ -622,7 +662,9 @@ def match(
         nonlocal total_input_tokens, total_output_tokens, total_calls, total_cache_hits
         try:
             for rec_a in records_a:
-                rec_a_filtered = filter_record_fields(rec_a, field_list_a) if field_list_a else rec_a
+                rec_a_filtered = (
+                    filter_record_fields(rec_a, field_list_a) if field_list_a else rec_a
+                )
 
                 # Process in chunks of source_b
                 for b_start in range(0, len(records_b), batch_size_b):
@@ -634,9 +676,7 @@ def match(
                         "source_a_name": source_a,
                         "source_b_name": source_b,
                         "source_a_record": str(rec_a_filtered),
-                        "source_b_records": "\n".join(
-                            f"[{i}] {r}" for i, r in enumerate(b_chunk)
-                        ),
+                        "source_b_records": "\n".join(f"[{i}] {r}" for i, r in enumerate(b_chunk)),
                     }
 
                     result = await processor.process_records(
@@ -662,16 +702,18 @@ def match(
                             idx = m.get("index", 0)
                             actual_idx = b_start + idx
                             if actual_idx < len(records_b):
-                                all_matches.append({
-                                    **rec_a,
-                                    "matched_record": records_b[actual_idx],
-                                    "score": score,
-                                    "reason": m.get("reason", ""),
-                                })
+                                all_matches.append(
+                                    {
+                                        **rec_a,
+                                        "matched_record": records_b[actual_idx],
+                                        "score": score,
+                                        "reason": m.get("reason", ""),
+                                    }
+                                )
 
             # Sort by score descending and limit to top_k
             all_matches.sort(key=lambda x: x.get("score", 0), reverse=True)
-            return all_matches[:top_k * len(records_a)]
+            return all_matches[: top_k * len(records_a)]
         finally:
             await prov.close()
 
@@ -701,8 +743,12 @@ def deduplicate(
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
     rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
-    temperature: Annotated[float | None, typer.Option("--temperature", help="LLM temperature")] = None,
-    max_tokens: Annotated[int | None, typer.Option("--max-tokens", help="Max response tokens")] = None,
+    temperature: Annotated[
+        float | None, typer.Option("--temperature", help="LLM temperature")
+    ] = None,
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", help="Max response tokens")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Skip cache lookup")] = False,
     # Output
     format: Annotated[str, typer.Option("--format", "-f", help="Output format")] = "json",
@@ -711,14 +757,22 @@ def deduplicate(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress")] = False,
     # Dedup-specific
     prompt: Annotated[str | None, typer.Option("--prompt", help="Custom prompt")] = None,
-    prompt_file: Annotated[Path | None, typer.Option("--prompt-file", help="Prompt from file")] = None,
+    prompt_file: Annotated[
+        Path | None, typer.Option("--prompt-file", help="Prompt from file")
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show prompt only")] = False,
     key: Annotated[str, typer.Option("--key", "-k", help="Field to use for blocking")] = "name",
     threshold: Annotated[
         float, typer.Option("--threshold", help="Min confidence for duplicate")
     ] = 0.8,
 ) -> None:
-    """Find semantic duplicates in a dataset source using an LLM."""
+    """Find semantic duplicates in a dataset source using an LLM.
+
+    \b
+    Examples:
+      anysite llm deduplicate dataset.yaml --source profiles --key name --threshold 0.8
+      anysite llm deduplicate dataset.yaml --source profiles --key name --format table
+    """
     config = _load_dataset_config(config_path)
     records = _read_source_records(config, source)
 
@@ -842,8 +896,12 @@ def enrich(
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
     rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
-    temperature: Annotated[float | None, typer.Option("--temperature", help="LLM temperature")] = None,
-    max_tokens: Annotated[int | None, typer.Option("--max-tokens", help="Max response tokens")] = None,
+    temperature: Annotated[
+        float | None, typer.Option("--temperature", help="LLM temperature")
+    ] = None,
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", help="Max response tokens")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Skip cache lookup")] = False,
     # Output
     format: Annotated[str, typer.Option("--format", "-f", help="Output format")] = "json",
@@ -852,7 +910,9 @@ def enrich(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress")] = False,
     # Enrich-specific
     prompt: Annotated[str | None, typer.Option("--prompt", help="Custom prompt")] = None,
-    prompt_file: Annotated[Path | None, typer.Option("--prompt-file", help="Prompt from file")] = None,
+    prompt_file: Annotated[
+        Path | None, typer.Option("--prompt-file", help="Prompt from file")
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show prompt only")] = False,
 ) -> None:
     """Enrich records with LLM-extracted attributes.
@@ -869,9 +929,7 @@ def enrich(
 
     # Parse --add specs
     field_specs = _parse_add_specs(add)
-    field_descriptions = "\n".join(
-        f"- {name}: {desc}" for name, desc in field_specs.items()
-    )
+    field_descriptions = "\n".join(f"- {name}: {desc}" for name, desc in field_specs.items())
 
     file_prompt = _read_prompt_file(prompt_file)
     template = file_prompt or prompt
@@ -953,15 +1011,23 @@ def enrich(
 def generate(
     config_path: Annotated[Path, typer.Argument(help="Path to dataset.yaml")],
     source: Annotated[str, typer.Option("--source", "-s", help="Source to process")],
-    prompt: Annotated[str | None, typer.Option("--prompt", help="Prompt with {field} placeholders")] = None,
-    prompt_file: Annotated[Path | None, typer.Option("--prompt-file", help="Prompt from file")] = None,
+    prompt: Annotated[
+        str | None, typer.Option("--prompt", help="Prompt with {field} placeholders")
+    ] = None,
+    prompt_file: Annotated[
+        Path | None, typer.Option("--prompt-file", help="Prompt from file")
+    ] = None,
     # LLM options
     provider: Annotated[str | None, typer.Option("--provider", help="LLM provider")] = None,
     model: Annotated[str | None, typer.Option("--model", help="Model ID")] = None,
     parallel: Annotated[int, typer.Option("--parallel", "-j", help="Concurrent LLM calls")] = 5,
     rate_limit: Annotated[str | None, typer.Option("--rate-limit", help="Rate limit")] = None,
-    temperature: Annotated[float | None, typer.Option("--temperature", help="LLM temperature")] = None,
-    max_tokens: Annotated[int | None, typer.Option("--max-tokens", help="Max response tokens")] = None,
+    temperature: Annotated[
+        float | None, typer.Option("--temperature", help="LLM temperature")
+    ] = None,
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", help="Max response tokens")
+    ] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Skip cache lookup")] = False,
     # Output
     format: Annotated[str, typer.Option("--format", "-f", help="Output format")] = "json",
@@ -1050,13 +1116,39 @@ def generate(
 
 
 @app.command("cache-stats")
-def cache_stats() -> None:
-    """Show LLM cache statistics."""
+def cache_stats(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
+) -> None:
+    """Show LLM cache statistics.
+
+    \b
+    Examples:
+      anysite llm cache-stats
+      anysite llm cache-stats --json
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     from anysite.llm.cache import LLMCache
 
     cache = LLMCache()
     stats = cache.stats()
     cache.close()
+
+    hints = [
+        ("Clear cache", "anysite llm cache-clear"),
+        ("Reconfigure LLM", "anysite llm setup"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(stats, hints=hints, command="anysite llm cache-stats")
+        return
 
     console = Console()
     console.print("[bold]LLM Cache Statistics[/bold]")
@@ -1064,17 +1156,51 @@ def cache_stats() -> None:
     console.print(f"  Input tokens:   {stats['total_input_tokens']:,}")
     console.print(f"  Output tokens:  {stats['total_output_tokens']:,}")
 
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints)
+
 
 @app.command("cache-clear")
-def cache_clear() -> None:
-    """Clear all LLM cache entries."""
+def cache_clear(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
+) -> None:
+    """Clear all LLM cache entries.
+
+    \b
+    Examples:
+      anysite llm cache-clear
+      anysite llm cache-clear --json
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
     from anysite.llm.cache import LLMCache
 
     cache = LLMCache()
     count = cache.clear()
     cache.close()
 
+    hints = [
+        ("View cache stats", "anysite llm cache-stats"),
+        ("Run analysis", "anysite llm summarize <dataset.yaml> --source <source>"),
+    ]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response({"cleared": count}, hints=hints, command="anysite llm cache-clear")
+        return
+
     Console().print(f"[green]Cleared[/green] {count} cache entries")
+
+    from anysite.cli.json_output import print_hints
+
+    print_hints(hints)
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
