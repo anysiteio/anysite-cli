@@ -40,6 +40,33 @@ BUILTIN_PROMPTS: dict[str, str] = {
         "{field_descriptions}\n\n"
         "Record:\n{record}"
     ),
+    "describe_table": (
+        "Describe the purpose of this database table in one sentence.\n\n"
+        "Table: {table_name}\n"
+        "Columns: {columns}\n"
+        "Row count: {row_count}\n"
+        "{sample_data}"
+    ),
+    "describe_columns": (
+        "For each column in this table, write a brief description (one phrase) "
+        "of what data it stores.\n\n"
+        "Table: {table_name}\n"
+        "Columns:\n{columns}\n\n"
+        "Sample data:\n{sample_data}"
+    ),
+    "describe_database": (
+        "Describe the purpose of this database in one or two sentences.\n\n"
+        "Database: {connection_name} ({database_type})\n"
+        "Tables:\n{tables}"
+    ),
+    "detect_relationships": (
+        "Examine these database tables and detect implicit foreign key "
+        "relationships based on column naming patterns (e.g., user_id likely "
+        "refers to users.id). Only report relationships where you are fairly "
+        "confident. Do NOT report relationships that are already declared as "
+        "foreign keys.\n\n"
+        "Tables:\n{tables}"
+    ),
 }
 
 

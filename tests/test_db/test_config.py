@@ -118,6 +118,23 @@ class TestConnectionConfig:
         assert config.type == DatabaseType.SQLITE
         assert config.path == "./test.db"
 
+    def test_read_only_default(self):
+        config = ConnectionConfig(name="test", type=DatabaseType.SQLITE, path="./test.db")
+        assert config.read_only is False
+
+    def test_read_only_flag(self):
+        config = ConnectionConfig(
+            name="test", type=DatabaseType.SQLITE, path="./test.db", read_only=True,
+        )
+        assert config.read_only is True
+        d = config.to_dict()
+        assert d["read_only"] is True
+
+    def test_read_only_not_in_dict_when_false(self):
+        config = ConnectionConfig(name="test", type=DatabaseType.SQLITE, path="./test.db")
+        d = config.to_dict()
+        assert "read_only" not in d
+
     def test_roundtrip(self):
         original = ConnectionConfig(
             name="pg",
@@ -136,6 +153,15 @@ class TestConnectionConfig:
         assert restored.host == original.host
         assert restored.port == original.port
         assert restored.ssl == original.ssl
+
+    def test_roundtrip_read_only(self):
+        original = ConnectionConfig(
+            name="replica", type=DatabaseType.POSTGRES, host="replica.example.com",
+            read_only=True,
+        )
+        d = original.to_dict()
+        restored = ConnectionConfig.from_dict("replica", d)
+        assert restored.read_only is True
 
 
 class TestOnConflict:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -80,6 +79,10 @@ def add(
         bool,
         typer.Option("--ssl", help="Enable SSL"),
     ] = False,
+    read_only: Annotated[
+        bool,
+        typer.Option("--read-only", help="Force connection as read-only (prevents write operations)"),
+    ] = False,
 ) -> None:
     """Add a named database connection.
 
@@ -88,17 +91,11 @@ def add(
       anysite db add local --type sqlite --path ./data.db
       anysite db add prod --type postgres --host db.example.com --database analytics --user app --password-env DB_PASS
       anysite db add remote --type postgres --url-env DATABASE_URL
+      anysite db add replica --type postgres --host replica.example.com --read-only
     """
     if password and password_env:
         typer.echo("Error: --password and --password-env are mutually exclusive", err=True)
         raise typer.Exit(1)
-
-    generated_env_var: str | None = None
-    if password:
-        safe_name = name.upper().replace("-", "_").replace(".", "_")
-        generated_env_var = f"ANYSITE_DB_{safe_name}_PASS"
-        os.environ[generated_env_var] = password
-        password_env = generated_env_var
 
     try:
         config = ConnectionConfig(
@@ -108,10 +105,12 @@ def add(
             port=port,
             database=database,
             user=user,
+            password=password,
             password_env=password_env,
             url_env=url_env,
             path=path,
             ssl=ssl,
+            read_only=read_only,
         )
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -122,12 +121,8 @@ def add(
 
     console = Console()
     console.print(f"[green]Added[/green] connection '{name}' ({type.value})")
-    if generated_env_var:
-        console.print(
-            f"[dim]Password stored via env var {generated_env_var}. "
-            f"Export it in your shell for future sessions: "
-            f"export {generated_env_var}=\"...\"[/dim]"
-        )
+    if password:
+        console.print("[dim]Password saved in ~/.anysite/connections.yaml[/dim]")
 
 
 @app.command("list")
@@ -146,6 +141,7 @@ def list_connections() -> None:
     table.add_column("Name", style="bold")
     table.add_column("Type")
     table.add_column("Location")
+    table.add_column("Access")
 
     for conn in connections:
         if conn.type in (DatabaseType.SQLITE, DatabaseType.DUCKDB):
@@ -164,7 +160,19 @@ def list_connections() -> None:
                 parts.append(f"/{conn.database}")
             location = "".join(parts)
 
-        table.add_row(conn.name, conn.type.value, location)
+        # Resolve access: config flag takes priority, then catalog discovery
+        if conn.read_only:
+            access = "[yellow]read-only[/yellow]"
+        else:
+            store = _get_catalog_store()
+            cat = store.load(conn.name)
+            if cat is not None and cat.read_only is True:
+                access = "[yellow]read-only[/yellow]"
+            elif cat is not None and cat.read_only is False:
+                access = "[green]read-write[/green]"
+            else:
+                access = ""
+        table.add_row(conn.name, conn.type.value, location, access)
 
     console.print(table)
 
@@ -249,6 +257,8 @@ def info(
         console.print(f"  URL: ${config.url_env}")
     if config.ssl:
         console.print("  SSL: enabled")
+    if config.read_only:
+        console.print("  Read-only: [yellow]yes[/yellow]")
     if config.options:
         console.print(f"  Options: {config.options}")
 
@@ -707,3 +717,349 @@ def _output_results(
 
     include_fields = parse_fields(fields)
     format_output(data, fmt, include_fields, output, quiet=False)
+
+
+def _get_catalog_store() -> Any:
+    from anysite.db.catalog import CatalogStore
+
+    return CatalogStore()
+
+
+# ── Discovery commands ────────────────────────────────────────────────
+
+
+@app.command("discover")
+def discover(
+    name: Annotated[
+        str,
+        typer.Argument(help="Connection name to discover"),
+    ],
+    with_llm: Annotated[
+        bool,
+        typer.Option("--with-llm", help="Generate LLM descriptions for tables and columns"),
+    ] = False,
+    sample_rows_count: Annotated[
+        int,
+        typer.Option("--sample-rows", help="Sample rows per table"),
+    ] = 5,
+    tables: Annotated[
+        str | None,
+        typer.Option("--tables", help="Comma-separated list of tables to include"),
+    ] = None,
+    exclude_tables: Annotated[
+        str | None,
+        typer.Option("--exclude-tables", help="Comma-separated list of tables to skip"),
+    ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="LLM provider override (openai/anthropic)"),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="LLM model override"),
+    ] = None,
+    no_cache: Annotated[
+        bool,
+        typer.Option("--no-cache", help="Skip LLM cache"),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Minimal output"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output catalog as JSON"),
+    ] = False,
+) -> None:
+    """Discover database schema, sample data, and optionally describe with LLM.
+
+    Introspects tables, columns, types, foreign keys, indexes, row counts,
+    and sample data. Saves the result as a catalog for future reference.
+
+    \b
+    Examples:
+      anysite db discover mydb
+      anysite db discover mydb --with-llm
+      anysite db discover mydb --tables users,posts --sample-rows 10
+      anysite db discover mydb --exclude-tables _migrations,_temp
+    """
+    import json as json_mod
+
+    from anysite.db.discovery import DatabaseDiscoverer
+
+    config = _get_config_or_exit(name)
+    manager = _get_manager()
+    adapter = manager.get_adapter(config)
+    console = Console()
+
+    include = [t.strip() for t in tables.split(",")] if tables else None
+    exclude = [t.strip() for t in exclude_tables.split(",")] if exclude_tables else None
+
+    with adapter:
+        if not quiet:
+            console.print(f"Discovering [bold]{name}[/bold] ({config.type.value})...")
+
+        discoverer = DatabaseDiscoverer(adapter, config.type.value, name)
+        catalog = discoverer.discover(
+            sample_rows=sample_rows_count,
+            include_tables=include,
+            exclude_tables=exclude,
+            force_read_only=config.read_only,
+        )
+
+    if with_llm:
+        import asyncio
+
+        from anysite.db.llm_describe import llm_describe_catalog
+
+        if not quiet:
+            console.print("Enriching with LLM descriptions...")
+
+        asyncio.run(
+            llm_describe_catalog(
+                catalog,
+                provider_override=provider,
+                model_override=model,
+                no_cache=no_cache,
+            )
+        )
+
+    # Save catalog
+    store = _get_catalog_store()
+    path = store.save(catalog)
+
+    if json_output:
+        typer.echo(json_mod.dumps(catalog.to_dict(), indent=2, default=str))
+    elif not quiet:
+        access = ""
+        if catalog.read_only is True:
+            access = " [yellow](read-only)[/yellow]"
+        elif catalog.read_only is False:
+            access = " [green](read-write)[/green]"
+        console.print(f"\n[green]Discovered[/green] {len(catalog.tables)} table(s){access}")
+        for t in catalog.tables:
+            row_info = f" ({t.row_count:,} rows)" if t.row_count is not None else ""
+            desc = f" — {t.description}" if t.description else ""
+            console.print(f"  {t.name}: {len(t.columns)} columns{row_info}{desc}")
+        console.print(f"\n[dim]Catalog saved to {path}[/dim]")
+
+
+@app.command("catalog")
+def catalog(
+    name: Annotated[
+        str | None,
+        typer.Argument(help="Connection name (omit to list all catalogs)"),
+    ] = None,
+    table: Annotated[
+        str | None,
+        typer.Option("--table", "-t", help="Show specific table detail"),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as JSON"),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", help="Output format (table/json)"),
+    ] = "table",
+) -> None:
+    """View saved database catalogs.
+
+    Without arguments, lists all saved catalogs.
+    With a connection name, shows the full catalog.
+    With --table, shows detail for a specific table.
+
+    \b
+    Examples:
+      anysite db catalog                           # list all catalogs
+      anysite db catalog mydb                      # show full catalog
+      anysite db catalog mydb --table users         # show table detail
+      anysite db catalog mydb --json                # JSON output for agents
+    """
+    import json as json_mod
+
+    store = _get_catalog_store()
+    console = Console()
+
+    if name is None:
+        # List all catalogs
+        catalogs = store.list()
+        if not catalogs:
+            console.print("[dim]No catalogs found. Run 'anysite db discover <name>' first.[/dim]")
+            return
+
+        if json_output or format == "json":
+            typer.echo(json_mod.dumps(catalogs, indent=2))
+            return
+
+        tbl = Table(title="Database Catalogs")
+        tbl.add_column("Connection", style="bold")
+        tbl.add_column("Type")
+        tbl.add_column("Tables")
+        tbl.add_column("Discovered")
+        tbl.add_column("LLM")
+
+        for c in catalogs:
+            tbl.add_row(
+                c["name"],
+                c["database_type"],
+                c["table_count"],
+                c["discovered_at"][:19] if c["discovered_at"] else "",
+                "yes" if c["llm_enriched"] == "True" else "no",
+            )
+        console.print(tbl)
+        return
+
+    # Show specific catalog
+    cat = store.load(name)
+    if cat is None:
+        typer.echo(f"Error: no catalog for '{name}'. Run 'anysite db discover {name}' first.", err=True)
+        raise typer.Exit(1)
+
+    if table:
+        # Show single table detail
+        t = cat.get_table(table)
+        if t is None:
+            typer.echo(f"Error: table '{table}' not in catalog for '{name}'", err=True)
+            available = [tb.name for tb in cat.tables]
+            typer.echo(f"Available tables: {', '.join(available)}", err=True)
+            raise typer.Exit(1)
+
+        if json_output or format == "json":
+            typer.echo(json_mod.dumps(t.to_dict(), indent=2, default=str))
+            return
+
+        _print_table_detail(console, t)
+        return
+
+    # Show full catalog
+    if json_output or format == "json":
+        typer.echo(json_mod.dumps(cat.to_dict(), indent=2, default=str))
+        return
+
+    _print_catalog(console, cat)
+
+
+def _print_table_detail(console: Console, t: Any) -> None:
+    """Print detailed info for a single table."""
+    from anysite.db.discovery import TableInfo
+
+    assert isinstance(t, TableInfo)
+
+    header = f"[bold]{t.name}[/bold]"
+    if t.row_count is not None:
+        header += f" ({t.row_count:,} rows)"
+    console.print(header)
+    if t.description:
+        console.print(f"  [dim]{t.description}[/dim]")
+    console.print()
+
+    # Columns
+    col_table = Table(title="Columns")
+    col_table.add_column("Name", style="bold")
+    col_table.add_column("Type")
+    col_table.add_column("PK")
+    col_table.add_column("Nullable")
+    col_table.add_column("Default")
+    col_table.add_column("Description")
+
+    for col in t.columns:
+        col_table.add_row(
+            col.name,
+            col.type,
+            "yes" if col.primary_key else "",
+            "yes" if col.nullable else "no",
+            col.default or "",
+            col.description or "",
+        )
+    console.print(col_table)
+
+    # Indexes
+    if t.indexes:
+        console.print()
+        idx_table = Table(title="Indexes")
+        idx_table.add_column("Name")
+        idx_table.add_column("Columns")
+        idx_table.add_column("Unique")
+        for idx in t.indexes:
+            idx_table.add_row(idx.name, ", ".join(idx.columns), "yes" if idx.unique else "")
+        console.print(idx_table)
+
+    # Foreign keys
+    if t.foreign_keys:
+        console.print()
+        fk_table = Table(title="Foreign Keys")
+        fk_table.add_column("Columns")
+        fk_table.add_column("References")
+        for fk in t.foreign_keys:
+            fk_table.add_row(
+                ", ".join(fk.constrained_columns),
+                f"{fk.referred_table}({', '.join(fk.referred_columns)})",
+            )
+        console.print(fk_table)
+
+    # Sample rows
+    if t.sample_rows:
+        console.print()
+        sample_table = Table(title=f"Sample Rows ({len(t.sample_rows)})")
+        if t.sample_rows:
+            for key in t.sample_rows[0]:
+                sample_table.add_column(key)
+            for row in t.sample_rows:
+                sample_table.add_row(*[str(v) if v is not None else "" for v in row.values()])
+        console.print(sample_table)
+
+
+def _print_catalog(console: Console, cat: Any) -> None:
+    """Print full catalog overview."""
+    from anysite.db.discovery import DatabaseCatalog
+
+    assert isinstance(cat, DatabaseCatalog)
+
+    console.print(f"[bold]Catalog: {cat.connection_name}[/bold] ({cat.database_type})")
+    console.print(f"  Discovered: {cat.discovered_at}")
+    if cat.read_only is True:
+        console.print("  Access: [yellow]read-only[/yellow]")
+    elif cat.read_only is False:
+        console.print("  Access: [green]read-write[/green]")
+    if cat.description:
+        console.print(f"  {cat.description}")
+    if cat.llm_enriched:
+        console.print("  LLM enriched: yes")
+    console.print()
+
+    # Tables summary
+    tbl = Table(title=f"Tables ({len(cat.tables)})")
+    tbl.add_column("Table", style="bold")
+    tbl.add_column("Columns", justify="right")
+    tbl.add_column("Rows", justify="right")
+    tbl.add_column("FKs", justify="right")
+    tbl.add_column("Indexes", justify="right")
+    tbl.add_column("Description")
+
+    for t in cat.tables:
+        tbl.add_row(
+            t.name,
+            str(len(t.columns)),
+            f"{t.row_count:,}" if t.row_count is not None else "",
+            str(len(t.foreign_keys)) if t.foreign_keys else "",
+            str(len(t.indexes)) if t.indexes else "",
+            t.description or "",
+        )
+    console.print(tbl)
+
+    if cat.implicit_relationships:
+        console.print()
+        rel_table = Table(title="Implicit Relationships (LLM-detected)")
+        rel_table.add_column("From")
+        rel_table.add_column("To")
+        rel_table.add_column("Confidence")
+        rel_table.add_column("Reason")
+        for r in cat.implicit_relationships:
+            rel_table.add_row(
+                f"{r.from_table}.{r.from_column}",
+                f"{r.to_table}.{r.to_column}",
+                f"{r.confidence:.0%}",
+                r.reason,
+            )
+        console.print(rel_table)

@@ -5,8 +5,10 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from anysite.db.catalog import CatalogStore
 from anysite.db.cli import app
 from anysite.db.config import ConnectionConfig, DatabaseType
+from anysite.db.discovery import ColumnInfo, DatabaseCatalog, TableInfo
 from anysite.db.manager import ConnectionManager
 
 runner = CliRunner()
@@ -32,6 +34,16 @@ class TestAddCommand:
         assert result.exit_code == 0
         assert "Added" in result.output
         assert patch_manager.get("mydb") is not None
+
+    def test_add_read_only(self, patch_manager, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        result = runner.invoke(
+            app, ["add", "mydb", "--type", "sqlite", "--path", db_path, "--read-only"]
+        )
+        assert result.exit_code == 0
+        config = patch_manager.get("mydb")
+        assert config is not None
+        assert config.read_only is True
 
     def test_add_missing_path(self, patch_manager):  # noqa: ARG002
         result = runner.invoke(app, ["add", "mydb", "--type", "sqlite"])
@@ -92,6 +104,14 @@ class TestInfoCommand:
         assert result.exit_code == 0
         assert "sqlite" in result.output
         assert "./data.db" in result.output
+
+    def test_info_read_only(self, patch_manager):
+        patch_manager.add(
+            ConnectionConfig(name="mydb", type=DatabaseType.SQLITE, path="./data.db", read_only=True)
+        )
+        result = runner.invoke(app, ["info", "mydb"])
+        assert result.exit_code == 0
+        assert "Read-only" in result.output
 
 
 class TestInsertCommand:
@@ -226,3 +246,216 @@ class TestCreateTableCommand:
         )
         assert result.exit_code == 0
         assert "Created" in result.output
+
+
+class TestDiscoverCommand:
+    def test_discover(self, patch_manager, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        config = ConnectionConfig(name="mydb", type=DatabaseType.SQLITE, path=db_path)
+        patch_manager.add(config)
+
+        from anysite.db.adapters.sqlite import SQLiteAdapter
+
+        with SQLiteAdapter(config) as adapter:
+            adapter.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            adapter.execute("INSERT INTO users VALUES (1, 'Alice')")
+            adapter.execute("INSERT INTO users VALUES (2, 'Bob')")
+            adapter.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT)")
+            adapter.execute("INSERT INTO posts VALUES (1, 1, 'Hello')")
+
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["discover", "mydb"])
+
+        assert result.exit_code == 0
+        assert "Discovered" in result.output
+        assert "2 table" in result.output
+        assert "users" in result.output
+        assert "posts" in result.output
+
+    def test_discover_json(self, patch_manager, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        config = ConnectionConfig(name="mydb", type=DatabaseType.SQLITE, path=db_path)
+        patch_manager.add(config)
+
+        from anysite.db.adapters.sqlite import SQLiteAdapter
+
+        with SQLiteAdapter(config) as adapter:
+            adapter.execute("CREATE TABLE demo (id INTEGER, val TEXT)")
+
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["discover", "mydb", "--json", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        import json
+
+        data = json.loads(result.output)
+        assert data["connection_name"] == "mydb"
+        assert len(data["tables"]) == 1
+
+    def test_discover_tables_filter(self, patch_manager, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        config = ConnectionConfig(name="mydb", type=DatabaseType.SQLITE, path=db_path)
+        patch_manager.add(config)
+
+        from anysite.db.adapters.sqlite import SQLiteAdapter
+
+        with SQLiteAdapter(config) as adapter:
+            adapter.execute("CREATE TABLE users (id INTEGER)")
+            adapter.execute("CREATE TABLE posts (id INTEGER)")
+            adapter.execute("CREATE TABLE logs (id INTEGER)")
+
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["discover", "mydb", "--tables", "users,posts"])
+
+        assert result.exit_code == 0
+        assert "2 table" in result.output
+
+    def test_discover_force_read_only(self, patch_manager, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        config = ConnectionConfig(
+            name="mydb", type=DatabaseType.SQLITE, path=db_path, read_only=True,
+        )
+        patch_manager.add(config)
+
+        from anysite.db.adapters.sqlite import SQLiteAdapter
+
+        with SQLiteAdapter(config) as adapter:
+            adapter.execute("CREATE TABLE demo (id INTEGER)")
+
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["discover", "mydb"])
+
+        assert result.exit_code == 0
+        assert "read-only" in result.output
+
+    def test_discover_nonexistent(self, patch_manager):  # noqa: ARG002
+        result = runner.invoke(app, ["discover", "nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+
+class TestCatalogCommand:
+    def test_catalog_list_empty(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog"])
+        assert result.exit_code == 0
+        assert "No catalogs" in result.output
+
+    def test_catalog_list(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        store = CatalogStore(catalogs_dir)
+        store.save(
+            DatabaseCatalog(
+                connection_name="mydb",
+                database_type="sqlite",
+                server_info={},
+                tables=[TableInfo(name="users", columns=[ColumnInfo(name="id", type="INTEGER")])],
+                discovered_at="2026-02-06T14:00:00+00:00",
+            )
+        )
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog"])
+        assert result.exit_code == 0
+        assert "mydb" in result.output
+        assert "sqlite" in result.output
+
+    def test_catalog_show(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        store = CatalogStore(catalogs_dir)
+        store.save(
+            DatabaseCatalog(
+                connection_name="mydb",
+                database_type="sqlite",
+                server_info={},
+                tables=[
+                    TableInfo(
+                        name="users",
+                        columns=[ColumnInfo(name="id", type="INTEGER", primary_key=True)],
+                        row_count=100,
+                    )
+                ],
+                discovered_at="2026-02-06T14:00:00+00:00",
+            )
+        )
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog", "mydb"])
+        assert result.exit_code == 0
+        assert "mydb" in result.output
+        assert "users" in result.output
+
+    def test_catalog_show_table(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        store = CatalogStore(catalogs_dir)
+        store.save(
+            DatabaseCatalog(
+                connection_name="mydb",
+                database_type="sqlite",
+                server_info={},
+                tables=[
+                    TableInfo(
+                        name="users",
+                        columns=[
+                            ColumnInfo(name="id", type="INTEGER", primary_key=True),
+                            ColumnInfo(name="name", type="TEXT"),
+                        ],
+                        row_count=50,
+                        sample_rows=[{"id": 1, "name": "Alice"}],
+                    )
+                ],
+                discovered_at="2026-02-06T14:00:00+00:00",
+            )
+        )
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog", "mydb", "--table", "users"])
+        assert result.exit_code == 0
+        assert "users" in result.output
+        assert "50" in result.output
+
+    def test_catalog_show_json(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        store = CatalogStore(catalogs_dir)
+        store.save(
+            DatabaseCatalog(
+                connection_name="mydb",
+                database_type="sqlite",
+                server_info={},
+                tables=[TableInfo(name="users", columns=[])],
+                discovered_at="2026-02-06T14:00:00+00:00",
+            )
+        )
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog", "mydb", "--json"])
+        assert result.exit_code == 0
+        import json
+
+        data = json.loads(result.output)
+        assert data["connection_name"] == "mydb"
+
+    def test_catalog_nonexistent(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog", "nope"])
+        assert result.exit_code == 1
+        assert "no catalog" in result.output
+
+    def test_catalog_table_nonexistent(self, tmp_path):
+        catalogs_dir = tmp_path / "catalogs"
+        store = CatalogStore(catalogs_dir)
+        store.save(
+            DatabaseCatalog(
+                connection_name="mydb",
+                database_type="sqlite",
+                server_info={},
+                tables=[TableInfo(name="users", columns=[])],
+                discovered_at="",
+            )
+        )
+        with patch("anysite.db.cli._get_catalog_store", lambda: CatalogStore(catalogs_dir)):
+            result = runner.invoke(app, ["catalog", "mydb", "--table", "nope"])
+        assert result.exit_code == 1
+        assert "not in catalog" in result.output

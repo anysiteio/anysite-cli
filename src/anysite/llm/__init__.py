@@ -57,11 +57,14 @@ def load_llm_config() -> LLMConfig:
 
 
 def get_api_key(provider_config: Any) -> str:
-    """Resolve API key from env var reference."""
+    """Resolve API key: direct value first, then environment variable."""
+    if getattr(provider_config, "api_key", None):
+        return provider_config.api_key
     env_var = provider_config.api_key_env
     key = os.environ.get(env_var, "")
     if not key:
         raise ConfigError(
-            f"API key not found. Set the {env_var} environment variable."
+            f"API key not found. Set the {env_var} environment variable "
+            f"or add 'api_key' to the provider config."
         )
     return key
