@@ -380,10 +380,12 @@ anysite dataset reset-cursor dataset.yaml && anysite dataset collect dataset.yam
 Manage database connections and run queries.
 
 ```bash
-# Add a connection (--password auto-stores via env var reference)
+# Add a connection (--password saves directly in connections.yaml)
 anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
 # Or reference an existing env var
 anysite db add pg --type postgres --host localhost --database mydb --user app --password-env PGPASS
+# Mark connection as read-only (prevents write operations)
+anysite db add replica --type postgres --host replica.example.com --database mydb --user reader --read-only
 
 # List and test connections
 anysite db list
@@ -402,7 +404,31 @@ cat updates.jsonl | anysite db upsert pg --table users --conflict-columns id --s
 anysite db schema pg --table users
 ```
 
-Supports SQLite and PostgreSQL. Passwords stored as env var references.
+### Database Discovery
+
+Introspect database schema, sample data, and optionally enrich with LLM descriptions:
+
+```bash
+# Discover schema (tables, columns, types, FKs, indexes, row counts, sample data)
+anysite db discover mydb
+
+# Discover with LLM-generated table/column descriptions and implicit relationship detection
+anysite db discover mydb --with-llm
+
+# Filter tables
+anysite db discover mydb --tables users,posts --sample-rows 10
+anysite db discover mydb --exclude-tables _migrations
+
+# View saved catalogs
+anysite db catalog                       # List all catalogs
+anysite db catalog mydb                  # Show full catalog
+anysite db catalog mydb --table users    # Show specific table
+anysite db catalog mydb --json           # JSON output for agents
+```
+
+Read-only access is auto-detected during discovery. Use `--read-only` on `db add` to force it.
+
+Supports SQLite and PostgreSQL. Passwords stored directly (`--password`) or via env var reference (`--password-env`).
 
 ## LLM Analysis
 
@@ -418,7 +444,7 @@ pip install "anysite-cli[llm]"        # OpenAI + Anthropic SDKs
 anysite llm setup
 ```
 
-Configures provider (OpenAI or Anthropic), API key env var, and default model. Tests the connection.
+Configures provider (OpenAI or Anthropic), API key (paste directly or reference an env var), and default model. Tests the connection. Direct keys are saved in `~/.anysite/config.yaml`.
 
 ### Commands
 

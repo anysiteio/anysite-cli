@@ -185,43 +185,53 @@ def setup() -> None:
     }
     default_env, default_model = defaults[provider]
 
-    api_key_env = typer.prompt("API key environment variable", default=default_env)
     model = typer.prompt("Default model", default=default_model)
 
-    # Validate: check if env var is set
+    # Ask for API key directly or via env var
     import os
 
-    if os.environ.get(api_key_env):
-        console.print(f"[green]Found[/green] {api_key_env} in environment")
+    api_key = typer.prompt(
+        "API key (paste key or press Enter to use env var)",
+        default="",
+        hide_input=True,
+    )
 
-        # Optionally validate with a test call
-        if typer.confirm("Test the connection?", default=True):
-            try:
-                from anysite.llm.providers import create_provider
+    api_key_env = ""
+    if not api_key:
+        api_key_env = typer.prompt("API key environment variable", default=default_env)
+        if os.environ.get(api_key_env):
+            console.print(f"[green]Found[/green] {api_key_env} in environment")
+        else:
+            console.print(
+                f"[yellow]Warning:[/yellow] {api_key_env} not set in environment. "
+                f"Set it before using LLM commands."
+            )
 
-                p = create_provider(provider, os.environ[api_key_env], model=model)
-                from anysite.llm.models import LLMMessage
+    # Resolve key for test
+    test_key = api_key or os.environ.get(api_key_env, "")
 
-                async def _test() -> Any:
-                    try:
-                        return await p.complete(
-                            [LLMMessage(role="user", content="Say 'ok'")],
-                            max_tokens=10,
-                        )
-                    finally:
-                        await p.close()
+    if test_key and typer.confirm("Test the connection?", default=True):
+        try:
+            from anysite.llm.providers import create_provider
 
-                result = asyncio.run(_test())
-                console.print(f"[green]Connection successful[/green] (model: {result.model})")
-            except Exception as e:
-                console.print(f"[red]Connection failed:[/red] {e}")
-                if not typer.confirm("Save configuration anyway?", default=False):
-                    raise typer.Exit(1) from None
-    else:
-        console.print(
-            f"[yellow]Warning:[/yellow] {api_key_env} not set in environment. "
-            f"Set it before using LLM commands."
-        )
+            p = create_provider(provider, test_key, model=model)
+            from anysite.llm.models import LLMMessage
+
+            async def _test() -> Any:
+                try:
+                    return await p.complete(
+                        [LLMMessage(role="user", content="Say 'ok'")],
+                        max_tokens=10,
+                    )
+                finally:
+                    await p.close()
+
+            result = asyncio.run(_test())
+            console.print(f"[green]Connection successful[/green] (model: {result.model})")
+        except Exception as e:
+            console.print(f"[red]Connection failed:[/red] {e}")
+            if not typer.confirm("Save configuration anyway?", default=False):
+                raise typer.Exit(1) from None
 
     # Write to config
     ensure_config_dir()
@@ -231,11 +241,15 @@ def setup() -> None:
     llm_config = config.get("llm", {})
     llm_config["default_provider"] = provider
     providers = llm_config.get("providers", {})
-    providers[provider] = {
+    provider_data: dict[str, Any] = {
         "provider": provider,
-        "api_key_env": api_key_env,
         "default_model": model,
     }
+    if api_key:
+        provider_data["api_key"] = api_key
+    if api_key_env:
+        provider_data["api_key_env"] = api_key_env
+    providers[provider] = provider_data
     llm_config["providers"] = providers
     llm_config.setdefault("cache_enabled", True)
     llm_config.setdefault("default_temperature", 0.0)

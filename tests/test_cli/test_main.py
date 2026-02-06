@@ -23,7 +23,7 @@ def test_help(runner):
     """Test --help flag."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "Anysite CLI" in result.stdout
+    assert "Web data extraction" in result.stdout
     assert "api" in result.stdout
     assert "describe" in result.stdout
     assert "schema" in result.stdout

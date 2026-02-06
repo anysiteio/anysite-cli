@@ -35,7 +35,14 @@ Parse the request to identify:
 
 ### 2. Discover Endpoints
 
-**ALWAYS discover endpoints before writing API calls or dataset configs.** Use the `/anysite-cli` skill's endpoint discovery commands:
+**ALWAYS discover endpoints before writing API calls or dataset configs.** Use the `/anysite-cli` skill's endpoint discovery commands.
+
+When the task involves database operations (loading, querying, or understanding a target DB), also discover the database schema:
+```bash
+anysite db discover mydb                   # Schema introspection + sample data
+anysite db discover mydb --with-llm        # Add LLM-generated descriptions
+anysite db catalog mydb --json             # View saved catalog as JSON
+```
 
 ```bash
 anysite describe                             # List ALL available endpoints
@@ -82,6 +89,7 @@ One-time large collection?
 - Data will be updated incrementally over time
 - Related tables need FK relationships
 - User explicitly asks for PostgreSQL/SQLite
+- Use `anysite db discover <name>` to understand the target DB schema before loading
 
 ### 4. Execute
 
@@ -322,6 +330,7 @@ Before any data task, verify the environment:
 anysite --version                    # CLI available?
 anysite schema update                # Schema cache current?
 anysite config get api_key           # API key configured?
+anysite db discover <name>           # (Optional) Discover target DB schema
 ```
 
 ## Key Constraints
@@ -348,5 +357,5 @@ For full CLI syntax, YAML schema, all options, and advanced configuration — in
 - All CLI commands and options
 - Complete dataset YAML reference with all source types
 - LLM enrichment configuration
-- Database operations
+- Database operations, discovery (`anysite db discover`), and catalog (`anysite db catalog`)
 - Endpoint discovery commands

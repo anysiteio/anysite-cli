@@ -9,10 +9,19 @@ from rich.console import Console
 from anysite import __app_name__, __version__
 from anysite.cli import config as config_cli
 
+LOGO = (
+    "                        __ __\n"
+    "  ____ _____  __  __  _/_//_/\n"
+    " / __ `/ __ \\/ / / /_/_//_/\n"
+    "/ /_/ / / / / /_/ //_//_/\n"
+    "\\__,_/_/ /_/\\__, /_//_/\n"
+    "           /____/"
+)
+
 # Create main app
 app = typer.Typer(
     name=__app_name__,
-    help="Anysite CLI - Web data extraction for humans and AI agents",
+    help="Web data extraction for humans and AI agents",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -33,6 +42,28 @@ def version_callback(value: bool) -> None:
     if value:
         console = Console()
         console.print(f"{__app_name__} version: [bold]{__version__}[/bold]")
+        raise typer.Exit()
+
+
+def _logo_callback(value: bool) -> None:
+    """Print ASCII art logo + help and exit."""
+    if value:
+        import click
+
+        from rich.align import Align
+        from rich.text import Text
+
+        ctx = click.get_current_context()
+        console = Console()
+        lines = LOGO.split("\n")
+        max_w = max(len(l) for l in lines)
+        pad = max(0, (console.width - max_w) // 2)
+        centered = "\n".join(" " * pad + l for l in lines)
+        console.print()
+        console.print(Text(centered, style="bold"))
+        console.print(Align.center(f"v{__version__}"), style="dim")
+        console.print()
+        console.print(ctx.get_help())
         raise typer.Exit()
 
 
@@ -78,21 +109,17 @@ def main(
             help="Show version and exit",
         ),
     ] = None,
+    logo: Annotated[
+        bool | None,
+        typer.Option(
+            "--logo",
+            callback=_logo_callback,
+            is_eager=True,
+            hidden=True,
+        ),
+    ] = None,
 ) -> None:
-    """Anysite CLI - Web data extraction for humans and AI agents.
-
-    Get data from LinkedIn, Instagram, Twitter, and more.
-
-    \b
-    Examples:
-      anysite linkedin user satyanadella
-      anysite linkedin users search --keywords "CTO" --count 10
-      anysite instagram user cristiano
-      anysite web parse https://example.com
-
-    \b
-    Documentation: https://docs.anysite.io/cli
-    """
+    """Web data extraction for humans and AI agents."""
     # Store global options
     state["api_key"] = api_key
     state["base_url"] = base_url

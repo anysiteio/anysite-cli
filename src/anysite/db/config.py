@@ -27,10 +27,12 @@ class ConnectionConfig(BaseModel):
     port: int | None = None
     database: str | None = None
     user: str | None = None
+    password: str | None = None
     password_env: str | None = None
     url_env: str | None = None
     path: str | None = None
     ssl: bool = False
+    read_only: bool = False
     options: dict[str, Any] = {}
 
     @model_validator(mode="after")
@@ -43,7 +45,9 @@ class ConnectionConfig(BaseModel):
         return self
 
     def get_password(self) -> str | None:
-        """Resolve password from environment variable."""
+        """Resolve password: direct value first, then environment variable."""
+        if self.password:
+            return self.password
         if self.password_env:
             value = os.environ.get(self.password_env)
             if value is None:
@@ -67,12 +71,14 @@ class ConnectionConfig(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for YAML serialization, omitting None values."""
         data: dict[str, Any] = {"type": self.type.value}
-        for field in ("host", "port", "database", "user", "password_env", "url_env", "path"):
+        for field in ("host", "port", "database", "user", "password", "password_env", "url_env", "path"):
             value = getattr(self, field)
             if value is not None:
                 data[field] = value
         if self.ssl:
             data["ssl"] = True
+        if self.read_only:
+            data["read_only"] = True
         if self.options:
             data["options"] = self.options
         return data

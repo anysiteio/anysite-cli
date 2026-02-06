@@ -74,6 +74,9 @@ anysite llm cache-clear
 
 # Database commands
 anysite db add mydb
+anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
+anysite db add pg --type postgres --host localhost --database mydb --user app --password-env PGPASS
+anysite db add replica --type postgres --host replica.example.com --read-only
 anysite db list
 anysite db test mydb
 anysite db info mydb
@@ -83,6 +86,14 @@ anysite db schema mydb --table users
 anysite db insert mydb --table users --stdin --auto-create
 anysite db query mydb --sql "SELECT * FROM users LIMIT 10" --format table
 anysite db upsert mydb --table users --conflict-columns id --stdin
+anysite db discover mydb
+anysite db discover mydb --with-llm
+anysite db discover mydb --tables users,posts --sample-rows 10
+anysite db discover mydb --exclude-tables _migrations
+anysite db catalog
+anysite db catalog mydb
+anysite db catalog mydb --table users
+anysite db catalog mydb --json
 ```
 
 ## Release Process
@@ -144,8 +155,8 @@ When releasing a new version:
 - `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`
 - `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference, diff-based incremental sync (`db_load.key` + `db_load.sync: full|append`). Supports diff-based incremental sync via `db_load.key` and `--snapshot` for loading specific dates
 - `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`
-- `llm/__init__.py` - `check_llm_deps()`, `load_llm_config()`, `get_api_key()` — verifies optional openai/anthropic are installed, loads LLM config from `~/.anysite/config.yaml`
-- `llm/models.py` - Dataclass models: `LLMProviderConfig`, `LLMConfig`, `LLMMessage`, `LLMResponse`, `StructuredSchema`, `ProcessorResult`
+- `llm/__init__.py` - `check_llm_deps()`, `load_llm_config()`, `get_api_key()` — verifies optional openai/anthropic are installed, loads LLM config from `~/.anysite/config.yaml`. `get_api_key()` resolves direct `api_key` first, then `api_key_env` fallback
+- `llm/models.py` - Dataclass models: `LLMProviderConfig` (with `api_key` direct + `api_key_env` fallback), `LLMConfig`, `LLMMessage`, `LLMResponse`, `StructuredSchema`, `ProcessorResult`
 - `llm/errors.py` - `LLMError`, `ConfigError`, `ProviderError`, `PromptError`
 - `llm/providers.py` - `LLMProvider` ABC, `OpenAIProvider` (AsyncOpenAI, JSON Schema structured output), `AnthropicProvider` (AsyncAnthropic, system-prompt structured output), `create_provider()` factory
 - `llm/cache.py` - `LLMCache` SQLite cache at `~/.anysite/llm_cache.db` with SHA256 keys, WAL mode
@@ -153,7 +164,7 @@ When releasing a new version:
 - `llm/processor.py` - `LLMProcessor`: async batch processing with rate limiting, semaphore concurrency, cache integration, JSON response parsing
 - `llm/cli.py` - Typer subcommands: `setup`, `summarize`, `classify`, `match`, `deduplicate`, `enrich`, `generate`, `cache-stats`, `cache-clear`
 - `db/__init__.py` - `check_db_deps()` — verifies optional psycopg is installed for Postgres
-- `db/config.py` - `ConnectionConfig`, `DatabaseType`, `OnConflict` enums and models
+- `db/config.py` - `ConnectionConfig` (with `password`, `password_env`, `read_only`, `url_env` fields), `DatabaseType`, `OnConflict` enums and models. `get_password()` resolves direct `password` first, then `password_env` fallback
 - `db/manager.py` - `ConnectionManager`: named connections stored in `~/.anysite/connections.yaml`, adapter factory
 - `db/adapters/base.py` - `DatabaseAdapter` ABC: connect, execute, fetch, insert_batch, create_table, transaction
 - `db/adapters/sqlite.py` - `SQLiteAdapter`: stdlib sqlite3, WAL mode, FK support, JSON serialization
@@ -163,7 +174,10 @@ When releasing a new version:
 - `db/operations/insert.py` - `insert_from_stream()`: batch insert with auto-create, conflict handling
 - `db/operations/query.py` - `execute_query()`: SQL execution with output formatting
 - `db/utils/sanitize.py` - `sanitize_identifier()`, `sanitize_table_name()`: safe SQL identifier quoting
-- `db/cli.py` - Typer subcommands: `add`, `list`, `test`, `info`, `remove`, `schema`, `insert`, `upsert`, `query`, `create-table`
+- `db/discovery.py` - Data models (`ColumnInfo`, `IndexInfo`, `ForeignKeyInfo`, `ImplicitRelationship`, `TableInfo`, `DatabaseCatalog`) and `DatabaseDiscoverer` engine with dialect-specific introspection (SQLite via PRAGMAs, PostgreSQL via information_schema/pg_catalog). `DatabaseCatalog.to_context_string()` for compact LLM context injection
+- `db/catalog.py` - `CatalogStore` — YAML persistence at `~/.anysite/catalogs/<connection>.yaml`. Save/load/list/remove database catalogs
+- `db/llm_describe.py` - `llm_describe_catalog()` — LLM-powered enrichment of catalogs: table descriptions, column descriptions, implicit relationship detection, overall database description. Reuses `LLMProcessor`, `LLMCache`, `StructuredSchema` from `anysite.llm`
+- `db/cli.py` - Typer subcommands: `add`, `list`, `test`, `info`, `remove`, `schema`, `insert`, `upsert`, `query`, `create-table`, `discover`, `catalog`
 
 **API Pattern**: All Anysite API endpoints use POST with JSON body. Auth is via `access-token` header.
 
@@ -228,11 +242,19 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 
 **Database Subsystem** (`anysite db`): Named database connections, schema inspection, data insertion, SQL queries. Supports SQLite and PostgreSQL.
 
-**Connection Storage**: `~/.anysite/connections.yaml`. Passwords stored as environment variable references (`password_env: PG_PASS`).
+**Connection Storage**: `~/.anysite/connections.yaml`. Passwords stored directly (`password`) or via environment variable reference (`password_env`). Direct value takes priority.
 
 **Adapter Pattern**: `DatabaseAdapter` ABC with implementations for SQLite (stdlib) and PostgreSQL (psycopg v3). Context manager for connect/disconnect. Methods: `execute`, `fetch_one`, `fetch_all`, `insert_batch`, `create_table`, `table_exists`, `get_table_schema`, `transaction`.
 
 **Schema Inference**: `infer_table_schema()` auto-detects column types from JSON data: integer, float, boolean, date, datetime, url, email, json, varchar, text. Type merging across rows. Dialect-aware SQL type mapping (sqlite, postgres, mysql).
+
+**Database Discovery** (`anysite db discover`): `DatabaseDiscoverer` introspects a connected database via raw SQL, dispatching on dialect (SQLite PRAGMAs vs PostgreSQL information_schema/pg_catalog). Discovers tables, columns (with types, nullability, defaults, PKs), row counts, sample rows, indexes, and foreign keys. Auto-detects read-only status (PostgreSQL via `pg_is_in_recovery()` + transaction test, SQLite via filesystem permission check). The `--read-only` flag on `db add` forces read-only; the `force_read_only` parameter on `discover()` propagates this. Result is a `DatabaseCatalog` dataclass with `to_dict()`/`from_dict()` serialization and `to_context_string()` for compact LLM context injection.
+
+**Database Catalog** (`anysite db catalog`): `CatalogStore` persists `DatabaseCatalog` objects as YAML files at `~/.anysite/catalogs/<connection>.yaml`. Supports save/load/list/remove. Agents use `anysite db catalog --json` to discover available data and `to_context_string()` to inject schema into LLM prompts.
+
+**LLM Catalog Enrichment**: `llm_describe_catalog()` enriches a catalog with LLM-generated descriptions in four steps: (1) describe each table, (2) describe columns per table, (3) detect implicit relationships (naming patterns like `user_id → users.id`), (4) generate overall database description. Uses `StructuredSchema` for typed JSON output. Triggered by `anysite db discover --with-llm`. Four built-in prompts added: `describe_table`, `describe_columns`, `describe_database`, `detect_relationships`.
+
+**Credential Storage**: Both database passwords and LLM API keys support dual resolution — direct value (priority) with environment variable fallback. DB: `ConnectionConfig.get_password()` checks `password` then `password_env`. LLM: `get_api_key()` checks `api_key` then `api_key_env`. The `anysite db add --password` saves directly to `connections.yaml`; `anysite llm setup` saves directly to `config.yaml` when a key is pasted.
 
 ## Common CLI Options Pattern
 
@@ -258,5 +280,5 @@ Tests are in `tests/` with subdirectories mirroring `src/anysite/`:
 - `test_output/` — Formatters and templates
 - `test_utils/` — Field selection and retry
 - `test_dataset/` — Dataset models, storage, collector (mocked API), DuckDB analyzer, DB loader (SQLite in-memory), transformer, exporters, history, scheduler, notifications, differ
-- `test_db/` — Database adapters, schema inference, connection manager, operations
+- `test_db/` — Database adapters, schema inference, connection manager, operations, discovery engine (SQLite in-memory), catalog store, LLM description (mocked provider)
 - `test_llm/` — LLM cache, CLI commands, models, processor, prompts, providers

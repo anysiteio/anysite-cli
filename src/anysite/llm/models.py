@@ -11,8 +11,9 @@ class LLMProviderConfig:
     """Configuration for a single LLM provider."""
 
     provider: str  # "openai" or "anthropic"
-    api_key_env: str  # env var name
+    api_key_env: str  # env var name (fallback)
     default_model: str
+    api_key: str | None = None  # direct key (takes priority over env var)
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> LLMProviderConfig:
@@ -20,6 +21,7 @@ class LLMProviderConfig:
             provider=data["provider"],
             api_key_env=data.get("api_key_env", ""),
             default_model=data.get("default_model", ""),
+            api_key=data.get("api_key"),
         )
 
 
