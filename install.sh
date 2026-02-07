@@ -138,6 +138,113 @@ ensure_path() {
     fi
 }
 
+# --- Setup (interactive API key configuration) ---
+
+do_setup() {
+    local config_file="$HOME/.anysite/config.yaml"
+    local has_api_key="false"
+    local has_llm_key="false"
+
+    # Check existing config
+    if [[ -f "$config_file" ]]; then
+        if grep -q '^api_key:' "$config_file" 2>/dev/null; then
+            has_api_key="true"
+        fi
+        if grep -q '^ *providers:' "$config_file" 2>/dev/null; then
+            has_llm_key="true"
+        fi
+    fi
+
+    # All keys already configured — skip setup entirely
+    if [[ "$has_api_key" == "true" && "$has_llm_key" == "true" ]]; then
+        echo ""
+        echo "  Quick start:"
+        dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
+        dim "${COMMAND_NAME} --help"
+        return 0
+    fi
+
+    # No TTY — show manual instructions
+    if ! [[ -r /dev/tty ]]; then
+        echo ""
+        echo "  Quick start:"
+        if [[ "$has_api_key" != "true" ]]; then
+            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY"
+        fi
+        dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
+        dim "${COMMAND_NAME} --help"
+        return 0
+    fi
+
+    echo ""
+    info "Quick setup (press Enter to skip any step)"
+    echo ""
+
+    # Step 1: Anysite API key (skip if already configured)
+    if [[ "$has_api_key" == "true" ]]; then
+        dim "Anysite API key: already configured"
+    else
+        dim "Get your key at https://app.anysite.io"
+        printf "    ${BOLD}Anysite API key${NC}: "
+        local api_key=""
+        read -r api_key < /dev/tty || true
+        if [[ -n "$api_key" ]]; then
+            "$COMMAND_NAME" config set api_key "$api_key" &>/dev/null
+            dim "Saved"
+        else
+            dim "Skipped"
+        fi
+    fi
+    echo ""
+
+    # Step 2: LLM provider choice + key (skip if already configured)
+    if [[ "$has_llm_key" == "true" ]]; then
+        dim "LLM provider: already configured"
+    else
+        dim "Keys: https://platform.openai.com/api-keys | https://console.anthropic.com/settings/keys"
+        printf "    ${BOLD}LLM provider${NC} — 1) OpenAI  2) Anthropic  3) Skip: "
+        local choice=""
+        read -r choice < /dev/tty || true
+
+        case "$choice" in
+            1)
+                printf "    ${BOLD}OpenAI API key${NC}: "
+                local openai_key=""
+                read -r openai_key < /dev/tty || true
+                if [[ -n "$openai_key" ]]; then
+                    "$COMMAND_NAME" config set llm.default_provider openai &>/dev/null
+                    "$COMMAND_NAME" config set llm.providers.openai.provider openai &>/dev/null
+                    "$COMMAND_NAME" config set llm.providers.openai.api_key "$openai_key" &>/dev/null
+                    dim "Saved"
+                else
+                    dim "Skipped"
+                fi
+                ;;
+            2)
+                printf "    ${BOLD}Anthropic API key${NC}: "
+                local anthropic_key=""
+                read -r anthropic_key < /dev/tty || true
+                if [[ -n "$anthropic_key" ]]; then
+                    "$COMMAND_NAME" config set llm.default_provider anthropic &>/dev/null
+                    "$COMMAND_NAME" config set llm.providers.anthropic.provider anthropic &>/dev/null
+                    "$COMMAND_NAME" config set llm.providers.anthropic.api_key "$anthropic_key" &>/dev/null
+                    dim "Saved"
+                else
+                    dim "Skipped"
+                fi
+                ;;
+            *)
+                dim "Skipped"
+                ;;
+        esac
+    fi
+    echo ""
+
+    echo "  Next steps:"
+    dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
+    dim "${COMMAND_NAME} --help"
+}
+
 # --- Actions ---
 
 do_install() {
@@ -182,17 +289,22 @@ do_install() {
     export PATH="$HOME/.local/bin:$PATH"
     ensure_path
 
-    # Step 4: Verify
+    # Step 4: Verify and setup
     echo ""
     if command -v "$COMMAND_NAME" &>/dev/null; then
         local version
         version=$("$COMMAND_NAME" --version 2>/dev/null || echo "")
-        success "anysite ${version} is ready!"
-        echo ""
-        echo "  Quick start:"
-        dim "${COMMAND_NAME} config set api_key YOUR_API_KEY"
-        dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
-        dim "${COMMAND_NAME} --help"
+        success "anysite ${version} installed!"
+
+        if [[ "$NO_SETUP" == "true" ]]; then
+            echo ""
+            echo "  Quick start:"
+            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY"
+            dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
+            dim "${COMMAND_NAME} --help"
+        else
+            do_setup
+        fi
     else
         success "anysite installed!"
         echo ""
@@ -266,6 +378,7 @@ usage() {
   ${BOLD}Options:${NC}
     --extras <name>   Extras to install: all (default), data, llm, db, none
     --version <ver>   Install specific version (e.g., 0.3.0)
+    --no-setup        Skip interactive API key setup
     --upgrade         Upgrade to latest version
     --uninstall       Remove anysite CLI
     --help            Show this help
@@ -287,6 +400,7 @@ main() {
     local ACTION="install"
     local EXTRAS="all"
     local VERSION=""
+    local NO_SETUP="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -294,6 +408,7 @@ main() {
             --upgrade)    ACTION="upgrade"; shift ;;
             --extras)     EXTRAS="${2:-}"; shift 2 ;;
             --version)    VERSION="${2:-}"; shift 2 ;;
+            --no-setup)   NO_SETUP="true"; shift ;;
             --help|-h)    ACTION="help"; shift ;;
             *) error "Unknown option: $1"; exit 1 ;;
         esac
