@@ -4,7 +4,7 @@
 
 # Anysite CLI
 
-A command-line tool designed for AI agents to collect, analyze, and store web data — with full support for humans too.
+A command-line tool designed for AI agents to collect, analyze, and store data from the web and your databases — with full support for humans too.
 
 **Agent-native protocol.** Auto-detects pipes and subprocesses, switches to structured JSON output. Discovery payload on first run, machine-readable exit codes, error codes with `retryable` flag and `suggestions`, next-step hints on every command. Zero configuration for agents — just call the binary.
 
@@ -15,6 +15,8 @@ A command-line tool designed for AI agents to collect, analyze, and store web da
 **LLM analysis without burning tokens.** Offload enrichment, classification, summarization, and deduplication to cheaper LLMs (OpenAI, Anthropic). Results are cached in SQLite — repeat runs cost nothing. Agents keep their context window for reasoning, not data crunching.
 
 **Database-ready output.** Auto-infer schemas from JSON, create tables, and load into SQLite or PostgreSQL with a single command. Foreign keys are linked automatically via provenance tracking. Diff-based incremental sync keeps your database up to date without full reloads.
+
+**Database discovery.** Connect any SQLite or PostgreSQL database and auto-discover its structure: tables, columns, types, indexes, foreign keys, row counts, and sample data. Optionally enrich with LLM-generated descriptions — table summaries, column semantics, implicit relationships. Saved catalogs give agents instant context about your data without manual documentation.
 
 Supports **LinkedIn** (profiles, companies, jobs, Sales Navigator, email lookup), **Instagram** (profiles, posts, reels, comments), **Twitter/X**, **Reddit**, **YouTube** (channels, videos, subtitles), **Y Combinator**, **SEC EDGAR**, **GitHub**, **Amazon**, **Google News**, **Trustpilot**, **TripAdvisor**, **Hacker News**, web page parsing, and [60+ more sources](https://anysite.io) via the Anysite API.
 
@@ -48,9 +50,25 @@ pip install "anysite-cli[postgres]"   # PostgreSQL support
 pip install "anysite-cli[all]"        # All optional dependencies
 ```
 
+## Prerequisites
+
+**Anysite API key** — required for web data collection. Sign up for a free trial at [app.anysite.io](https://app.anysite.io).
+
+```bash
+anysite config set api_key YOUR_API_KEY
+```
+
+**[OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys) API key** — optional, for LLM-powered analysis (enrichment, classification, summarization, deduplication).
+
+```bash
+anysite llm setup
+```
+
+Database features (`db`, `dataset`) work without any API keys.
+
 ## Agent Protocol
 
-anysite CLI is **agent-first**: it auto-detects when stdout is not a TTY (pipe, subprocess) and switches all output to structured JSON. No flags needed.
+Anysite CLI is **agent-first**: it auto-detects when stdout is not a TTY (pipe, subprocess) and switches all output to structured JSON. No flags needed.
 
 ### Discovery
 
