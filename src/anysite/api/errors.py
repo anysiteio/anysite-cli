@@ -57,8 +57,9 @@ class AuthenticationError(AnysiteError):
 Your API key is invalid or expired.
 
 To fix this:
-  1. Get your API key at https://app.anysite.io/
-  2. Set it with: anysite config set api_key <your-key>
+  1. Log in with: anysite auth login
+  2. Or get your API key at https://app.anysite.io/
+  3. Set it with: anysite config set api_key <your-key>
 
 Or set environment variable:
   export ANYSITE_API_KEY=sk-xxxxx"""
@@ -68,7 +69,8 @@ Or set environment variable:
     @property
     def suggestions(self) -> list[str]:
         return [
-            "Get your API key at https://app.anysite.io/",
+            "Log in with: anysite auth login",
+            "Or get your API key at https://app.anysite.io/",
             "Set it with: anysite config set api_key <your-key>",
             "Or set: export ANYSITE_API_KEY=sk-xxxxx",
         ]

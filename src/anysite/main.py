@@ -596,10 +596,26 @@ def api_call(
 
 
 def get_api_key() -> str | None:
-    """Get API key from global state or settings."""
+    """Get API key with priority: CLI flag > env var > OAuth token > config file."""
+    # 1. CLI --api-key flag
     if state["api_key"]:
         return str(state["api_key"])
 
+    # 2. ANYSITE_API_KEY env var
+    import os
+
+    env_key = os.environ.get("ANYSITE_API_KEY")
+    if env_key:
+        return env_key
+
+    # 3. OAuth token (from anysite auth login)
+    from anysite.auth import get_oauth_token
+
+    oauth_token = get_oauth_token()
+    if oauth_token:
+        return oauth_token
+
+    # 4. Config file api_key
     from anysite.config import get_settings
 
     return get_settings().api_key
@@ -641,6 +657,14 @@ try:
     from anysite.llm.cli import app as llm_app
 
     app.add_typer(llm_app, name="llm", help="LLM-powered analysis of collected data")
+except ImportError:
+    pass
+
+# Register auth subcommand (no optional dependencies)
+try:
+    from anysite.auth.cli import app as auth_app
+
+    app.add_typer(auth_app, name="auth", help="Authenticate with Anysite (OAuth2)")
 except ImportError:
     pass
 

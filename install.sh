@@ -169,7 +169,8 @@ do_setup() {
         echo ""
         echo "  Quick start:"
         if [[ "$has_api_key" != "true" ]]; then
-            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY"
+            dim "${COMMAND_NAME} auth login                              # log in via browser"
+            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY         # or paste key manually"
         fi
         dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
         dim "${COMMAND_NAME} --help"
@@ -180,20 +181,40 @@ do_setup() {
     info "Quick setup (press Enter to skip any step)"
     echo ""
 
-    # Step 1: Anysite API key (skip if already configured)
+    # Step 1: Anysite authentication (skip if already configured)
     if [[ "$has_api_key" == "true" ]]; then
         dim "Anysite API key: already configured"
     else
-        dim "Get your key at https://app.anysite.io"
-        printf "    ${BOLD}Anysite API key${NC}: "
-        local api_key=""
-        read -r api_key < /dev/tty || true
-        if [[ -n "$api_key" ]]; then
-            "$COMMAND_NAME" config set api_key "$api_key" &>/dev/null
-            dim "Saved"
-        else
-            dim "Skipped"
-        fi
+        printf "    ${BOLD}Authenticate${NC} — 1) Log in via browser  2) Paste API key  3) Skip: "
+        local auth_choice=""
+        read -r auth_choice < /dev/tty || true
+
+        case "$auth_choice" in
+            1)
+                echo ""
+                dim "Opening browser for authentication..."
+                if "$COMMAND_NAME" auth login 2>/dev/null; then
+                    dim "Authenticated"
+                else
+                    warn "Browser login failed. You can try later: ${COMMAND_NAME} auth login"
+                fi
+                ;;
+            2)
+                dim "Get your key at https://app.anysite.io"
+                printf "    ${BOLD}Anysite API key${NC}: "
+                local api_key=""
+                read -r api_key < /dev/tty || true
+                if [[ -n "$api_key" ]]; then
+                    "$COMMAND_NAME" config set api_key "$api_key" &>/dev/null
+                    dim "Saved"
+                else
+                    dim "Skipped"
+                fi
+                ;;
+            *)
+                dim "Skipped — authenticate later: ${COMMAND_NAME} auth login"
+                ;;
+        esac
     fi
     echo ""
 
@@ -299,7 +320,8 @@ do_install() {
         if [[ "$NO_SETUP" == "true" ]]; then
             echo ""
             echo "  Quick start:"
-            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY"
+            dim "${COMMAND_NAME} auth login                              # log in via browser"
+            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY         # or paste key manually"
             dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
             dim "${COMMAND_NAME} --help"
         else
