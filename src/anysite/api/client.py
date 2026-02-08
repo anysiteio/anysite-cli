@@ -260,6 +260,11 @@ def create_client(
     Returns:
         Configured AnysiteClient instance
     """
+    if api_key is None:
+        from anysite.main import get_api_key
+
+        api_key = get_api_key()
+
     from anysite.config import get_settings
 
     settings = get_settings()

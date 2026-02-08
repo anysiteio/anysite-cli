@@ -40,6 +40,15 @@ def get_schema_cache_path() -> Path:
     return get_config_dir() / "schema.json"
 
 
+def get_auth_token_path() -> Path:
+    """Get the OAuth token file path.
+
+    Returns:
+        Path to auth.json in the config directory.
+    """
+    return get_config_dir() / "auth.json"
+
+
 def ensure_config_dir() -> Path:
     """Ensure the configuration directory exists.
 

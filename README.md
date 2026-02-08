@@ -50,12 +50,35 @@ pip install "anysite-cli[postgres]"   # PostgreSQL support
 pip install "anysite-cli[all]"        # All optional dependencies
 ```
 
-## Prerequisites
+## Authentication
 
-**Anysite API key** — required for web data collection. Sign up for a free trial at [app.anysite.io](https://app.anysite.io).
+**Anysite account** — required for web data collection. Sign up for a free trial at [app.anysite.io](https://app.anysite.io).
+
+**Option 1: Log in via browser** (recommended)
+
+```bash
+anysite auth login
+```
+
+Opens your browser for OAuth2 authentication. After approval, the CLI automatically receives and stores your access token (valid for 30 days).
+
+**Option 2: Set API key manually**
 
 ```bash
 anysite config set api_key YOUR_API_KEY
+```
+
+Or via environment variable:
+
+```bash
+export ANYSITE_API_KEY=sk-xxxxx
+```
+
+**Manage your session:**
+
+```bash
+anysite auth status    # Check current authentication
+anysite auth logout    # Remove stored OAuth token
 ```
 
 **[OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys) API key** — optional, for LLM-powered analysis (enrichment, classification, summarization, deduplication).
