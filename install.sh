@@ -2,16 +2,16 @@
 # install.sh — Anysite CLI installer
 #
 # One-line install (includes all extras by default):
-#   curl -fsSL https://anysite.io/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash
 #
 # Minimal install (no optional dependencies):
-#   curl -fsSL https://anysite.io/install.sh | bash -s -- --extras none
+#   curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash -s -- --extras none
 #
 # Upgrade:
-#   curl -fsSL https://anysite.io/install.sh | bash -s -- --upgrade
+#   curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash -s -- --upgrade
 #
 # Uninstall:
-#   curl -fsSL https://anysite.io/install.sh | bash -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash -s -- --uninstall
 
 set -euo pipefail
 
@@ -394,8 +394,8 @@ usage() {
   ${BOLD}Anysite CLI Installer${NC}
 
   ${BOLD}Usage:${NC}
-    curl -fsSL https://anysite.io/install.sh | bash
-    curl -fsSL https://anysite.io/install.sh | bash -s -- [options]
+    curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/anysiteio/anysite-cli/main/install.sh | bash -s -- [options]
 
   ${BOLD}Options:${NC}
     --extras <name>   Extras to install: all (default), data, llm, db, none
