@@ -178,3 +178,52 @@ class TestDatabaseType:
         assert DatabaseType.POSTGRES == "postgres"
         assert DatabaseType.MYSQL == "mysql"
         assert DatabaseType.DUCKDB == "duckdb"
+        assert DatabaseType.CLICKHOUSE == "clickhouse"
+
+    def test_clickhouse_config_with_host(self):
+        config = ConnectionConfig(
+            name="ch",
+            type=DatabaseType.CLICKHOUSE,
+            host="localhost",
+            port=8123,
+            database="default",
+            user="default",
+        )
+        assert config.host == "localhost"
+        assert config.port == 8123
+
+    def test_clickhouse_config_with_ssl(self):
+        config = ConnectionConfig(
+            name="ch",
+            type=DatabaseType.CLICKHOUSE,
+            host="ch.example.com",
+            port=8443,
+            database="analytics",
+            user="app",
+            password="secret",
+            ssl=True,
+        )
+        assert config.ssl is True
+        assert config.get_password() == "secret"
+
+    def test_clickhouse_requires_host_or_url(self):
+        with pytest.raises(ValueError, match="requires 'host' or 'url_env'"):
+            ConnectionConfig(name="ch", type=DatabaseType.CLICKHOUSE)
+
+    def test_clickhouse_roundtrip(self):
+        original = ConnectionConfig(
+            name="ch",
+            type=DatabaseType.CLICKHOUSE,
+            host="ch.example.com",
+            port=8443,
+            database="analytics",
+            user="app",
+            password_env="CH_PASS",
+            ssl=True,
+        )
+        d = original.to_dict()
+        restored = ConnectionConfig.from_dict("ch", d)
+        assert restored.type == DatabaseType.CLICKHOUSE
+        assert restored.host == original.host
+        assert restored.port == original.port
+        assert restored.ssl == original.ssl

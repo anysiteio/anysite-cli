@@ -145,6 +145,13 @@ class ConnectionManager:
             check_db_deps("postgres")
             return PostgresAdapter(config)
 
+        elif config.type == DatabaseType.CLICKHOUSE:
+            from anysite.db import check_db_deps
+            from anysite.db.adapters.clickhouse import ClickHouseAdapter
+
+            check_db_deps("clickhouse")
+            return ClickHouseAdapter(config)
+
         else:
             raise ValueError(f"Unsupported database type: {config.type.value}")
 

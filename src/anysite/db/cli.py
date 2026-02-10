@@ -619,6 +619,14 @@ def _list_tables(adapter: Any, db_type: DatabaseType) -> list[str]:
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
         )
         return [r["tablename"] for r in rows]
+    elif db_type == DatabaseType.CLICKHOUSE:
+        rows = adapter.fetch_all(
+            "SELECT name FROM system.tables "
+            "WHERE database = currentDatabase() "
+            "AND engine NOT IN ('View', 'MaterializedView') "
+            "ORDER BY name"
+        )
+        return [r["name"] for r in rows]
     return []
 
 
@@ -1110,7 +1118,7 @@ def discover(
     sample_rows_count: Annotated[
         int,
         typer.Option("--sample-rows", help="Sample rows per table"),
-    ] = 5,
+    ] = 1,
     tables: Annotated[
         str | None,
         typer.Option("--tables", help="Comma-separated list of tables to include"),

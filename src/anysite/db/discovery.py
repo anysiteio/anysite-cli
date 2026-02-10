@@ -280,7 +280,7 @@ class DatabaseDiscoverer:
     def discover(
         self,
         *,
-        sample_rows: int = 5,
+        sample_rows: int = 1,
         include_tables: list[str] | None = None,
         exclude_tables: list[str] | None = None,
         force_read_only: bool = False,
@@ -332,12 +332,20 @@ class DatabaseDiscoverer:
                 "WHERE schemaname = 'public' ORDER BY tablename"
             )
             return [r["tablename"] for r in rows]
+        elif self._db_type == "clickhouse":
+            rows = self._adapter.fetch_all(
+                "SELECT name FROM system.tables "
+                "WHERE database = currentDatabase() "
+                "AND engine NOT IN ('View', 'MaterializedView') "
+                "ORDER BY name"
+            )
+            return [r["name"] for r in rows]
         return []
 
     def _probe_write_access(self) -> bool | None:
         """Check if the connection has write access without writing anything.
 
-        Uses metadata queries (PostgreSQL) or filesystem checks (SQLite).
+        Uses metadata queries (PostgreSQL/ClickHouse) or filesystem checks (SQLite).
 
         Returns:
             True if read-only, False if writable, None if unable to determine.
@@ -356,6 +364,38 @@ class DatabaseDiscoverer:
                     return not row["can_create"]
             except Exception:
                 logger.debug("Failed to probe write access", exc_info=True)
+        elif self._db_type == "clickhouse":
+            try:
+                # Check session-level readonly setting
+                row = self._adapter.fetch_one(
+                    "SELECT value FROM system.settings WHERE name = 'readonly'"
+                )
+                if row and str(row["value"]) != "0":
+                    return True
+            except Exception:
+                logger.debug("Failed to check readonly setting", exc_info=True)
+            try:
+                # Check user grants for write access
+                write_rows = self._adapter.fetch_all(
+                    "SELECT access_type FROM system.grants "
+                    "WHERE user_name = currentUser() "
+                    "AND access_type IN ("
+                    "'INSERT', 'CREATE TABLE', 'ALTER TABLE', "
+                    "'DROP TABLE', 'CREATE', 'ALL')"
+                )
+                if not write_rows:
+                    return True
+                return False
+            except Exception:
+                logger.debug("Failed to check grants", exc_info=True)
+            # Fallback: try a harmless EXPLAIN to probe write access
+            try:
+                self._adapter.fetch_all(
+                    "EXPLAIN CREATE TEMPORARY TABLE __anysite_probe (x Int8) ENGINE = Memory"
+                )
+                return False
+            except Exception:
+                return True
         elif self._db_type == "sqlite":
             import os
 
@@ -387,6 +427,8 @@ class DatabaseDiscoverer:
             return self._get_columns_sqlite(table_name)
         elif self._db_type == "postgres":
             return self._get_columns_postgres(table_name)
+        elif self._db_type == "clickhouse":
+            return self._get_columns_clickhouse(table_name)
         return []
 
     def _get_columns_sqlite(self, table_name: str) -> list[ColumnInfo]:
@@ -437,6 +479,29 @@ class DatabaseDiscoverer:
             )
         return columns
 
+    def _get_columns_clickhouse(self, table_name: str) -> list[ColumnInfo]:
+        rows = self._adapter.fetch_all(
+            "SELECT name, type, default_kind, is_in_primary_key "
+            "FROM system.columns "
+            "WHERE database = currentDatabase() AND table = %s "
+            "ORDER BY position",
+            (table_name,),
+        )
+        columns = []
+        for r in rows:
+            col_type = r["type"]
+            nullable = col_type.startswith("Nullable(")
+            columns.append(
+                ColumnInfo(
+                    name=r["name"],
+                    type=col_type,
+                    nullable=nullable,
+                    primary_key=bool(r["is_in_primary_key"]),
+                    default=r["default_kind"] if r["default_kind"] else None,
+                )
+            )
+        return columns
+
     def _get_row_count(self, table_name: str) -> int | None:
         try:
             if self._db_type == "postgres":
@@ -457,6 +522,16 @@ class DatabaseDiscoverer:
                         )
                         return exact["cnt"] if exact else 0
                     return estimate
+            elif self._db_type == "clickhouse":
+                row = self._adapter.fetch_one(
+                    "SELECT sum(rows) AS estimate FROM system.parts "
+                    "WHERE database = currentDatabase() "
+                    "AND table = %s AND active",
+                    (table_name,),
+                )
+                if row and row["estimate"] is not None:
+                    return int(row["estimate"])
+                return 0
             # SQLite or fallback: exact count
             row = self._adapter.fetch_one(
                 f'SELECT COUNT(*) AS cnt FROM "{table_name}"'
@@ -496,6 +571,8 @@ class DatabaseDiscoverer:
             return self._get_indexes_sqlite(table_name)
         elif self._db_type == "postgres":
             return self._get_indexes_postgres(table_name)
+        elif self._db_type == "clickhouse":
+            return self._get_indexes_clickhouse(table_name)
         return []
 
     def _get_indexes_sqlite(self, table_name: str) -> list[IndexInfo]:
@@ -533,11 +610,53 @@ class DatabaseDiscoverer:
             for r in rows
         ]
 
+    def _get_indexes_clickhouse(self, table_name: str) -> list[IndexInfo]:
+        indexes: list[IndexInfo] = []
+        # Get sorting key (ORDER BY) as primary index
+        try:
+            row = self._adapter.fetch_one(
+                "SELECT sorting_key FROM system.tables "
+                "WHERE database = currentDatabase() "
+                "AND name = %s",
+                (table_name,),
+            )
+            if row and row["sorting_key"]:
+                pk_cols = [c.strip() for c in row["sorting_key"].split(",")]
+                indexes.append(IndexInfo(
+                    name="PRIMARY_KEY (ORDER BY)",
+                    columns=pk_cols,
+                    unique=False,
+                ))
+        except Exception:
+            logger.debug("Failed to get sorting key for %s", table_name, exc_info=True)
+
+        # Get data skipping indexes
+        try:
+            rows = self._adapter.fetch_all(
+                "SELECT name, expr, type "
+                "FROM system.data_skipping_indices "
+                "WHERE database = currentDatabase() "
+                "AND table = %s",
+                (table_name,),
+            )
+            for r in rows:
+                indexes.append(IndexInfo(
+                    name=r["name"],
+                    columns=[r["expr"]],
+                    unique=False,
+                ))
+        except Exception:
+            logger.debug("Failed to get indexes for %s", table_name, exc_info=True)
+
+        return indexes
+
     def _get_foreign_keys(self, table_name: str) -> list[ForeignKeyInfo]:
         if self._db_type == "sqlite":
             return self._get_foreign_keys_sqlite(table_name)
         elif self._db_type == "postgres":
             return self._get_foreign_keys_postgres(table_name)
+        elif self._db_type == "clickhouse":
+            return []  # ClickHouse does not support foreign keys
         return []
 
     def _get_foreign_keys_sqlite(self, table_name: str) -> list[ForeignKeyInfo]:

@@ -25,6 +25,12 @@ def check_db_deps(db_type: str | None = None) -> None:
         except ImportError:
             _missing_deps_error(["pymysql"], extra="mysql")
 
+    elif db_type == "clickhouse":
+        try:
+            import clickhouse_connect  # noqa: F401
+        except ImportError:
+            _missing_deps_error(["clickhouse-connect"], extra="clickhouse")
+
 
 def _missing_deps_error(missing: list[str], extra: str = "db") -> NoReturn:
     import typer

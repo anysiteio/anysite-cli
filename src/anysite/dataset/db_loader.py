@@ -241,7 +241,10 @@ class DatasetDbLoader:
         # Fallback: full INSERT of latest snapshot
         # If table already exists and no key for diff, truncate first to avoid duplicates
         if table_exists and not diff_key and not dry_run:
-            self.adapter.execute(f"DELETE FROM {table_name}")
+            if self._dialect == "clickhouse":
+                self.adapter.execute(f"TRUNCATE TABLE {table_name}")
+            else:
+                self.adapter.execute(f"DELETE FROM {table_name}")
             logger.info("Truncated %s (no db_load.key for incremental sync)", table_name)
 
         latest = _get_latest_parquet(self.base_path, source.id)
@@ -297,6 +300,12 @@ class DatasetDbLoader:
             col_defs = {"id": self._auto_id_type()}
             col_defs.update(sql_types)
             self.adapter.create_table(table_name, col_defs, primary_key="id")
+
+        # For ClickHouse, pre-assign IDs (no auto-increment)
+        if self._dialect == "clickhouse":
+            start_id = (self._get_last_id(table_name) or 0) + 1
+            for i, row in enumerate(rows):
+                row["id"] = start_id + i
 
         # Insert rows one at a time to capture auto-increment IDs for FK mapping
         value_map: dict[str, int] = {}
@@ -368,10 +377,16 @@ class DatasetDbLoader:
             for record in result.removed:
                 key_val = _get_key_val(record)
                 if key_val is not None:
-                    self.adapter.execute(
-                        f"DELETE FROM {table_name} WHERE {safe_col} = {ph}",
-                        (str(key_val),),
-                    )
+                    if self._dialect == "clickhouse":
+                        self.adapter.execute(
+                            f"ALTER TABLE {table_name} DELETE WHERE {safe_col} = {ph}",
+                            (str(key_val),),
+                        )
+                    else:
+                        self.adapter.execute(
+                            f"DELETE FROM {table_name} WHERE {safe_col} = {ph}",
+                            (str(key_val),),
+                        )
                     total += 1
 
         # UPDATE changed records
@@ -409,11 +424,18 @@ class DatasetDbLoader:
                     continue
 
                 params.append(str(key_val))
-                sql = (
-                    f"UPDATE {table_name} "
-                    f"SET {', '.join(set_parts)} "
-                    f"WHERE {safe_col} = {ph}"
-                )
+                if self._dialect == "clickhouse":
+                    sql = (
+                        f"ALTER TABLE {table_name} "
+                        f"UPDATE {', '.join(set_parts)} "
+                        f"WHERE {safe_col} = {ph}"
+                    )
+                else:
+                    sql = (
+                        f"UPDATE {table_name} "
+                        f"SET {', '.join(set_parts)} "
+                        f"WHERE {safe_col} = {ph}"
+                    )
                 self.adapter.execute(sql, tuple(params))
                 total += 1
 
@@ -458,7 +480,7 @@ class DatasetDbLoader:
 
     def _placeholder(self) -> str:
         """Get the parameter placeholder for the dialect."""
-        if self._dialect == "postgres":
+        if self._dialect in ("postgres", "clickhouse"):
             return "%s"
         return "?"
 
@@ -466,6 +488,8 @@ class DatasetDbLoader:
         """Get the auto-increment ID column type for the dialect."""
         if self._dialect == "postgres":
             return "SERIAL"
+        if self._dialect == "clickhouse":
+            return "Int64"
         return "INTEGER"
 
     def _get_row_count(self, table_name: str) -> int:
