@@ -70,7 +70,9 @@ anysite dataset guide --list
 anysite dataset guide --json
 
 # LLM commands
-anysite llm setup
+anysite llm setup                                                    # Interactive (human)
+anysite llm setup --provider openai --api-key sk-xxx --no-test       # Non-interactive (agent)
+anysite llm setup --provider anthropic --api-key-env ANTHROPIC_API_KEY --no-test
 anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --format table
 anysite llm classify dataset.yaml --source posts --categories "positive,negative,neutral" --format table
 anysite llm enrich dataset.yaml --source posts --add "sentiment:positive/negative/neutral" --add "language:string"
@@ -79,6 +81,14 @@ anysite llm match dataset.yaml --source-a profiles --source-b companies --top-k 
 anysite llm deduplicate dataset.yaml --source profiles --key name --threshold 0.8
 anysite llm cache-stats
 anysite llm cache-clear
+
+# Auth commands
+anysite auth login                          # Interactive browser-based OAuth2
+anysite auth login --force --no-browser     # Re-authenticate without confirmation (agent)
+anysite auth status
+anysite auth status --json
+anysite auth logout
+anysite auth logout --force                 # Skip confirmation (agent)
 
 # Database commands
 anysite db add mydb

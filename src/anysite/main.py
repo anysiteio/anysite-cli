@@ -73,7 +73,6 @@ def _logo_callback(value: bool) -> None:
     """Print ASCII art logo + help and exit."""
     if value:
         import click
-
         from rich.align import Align
         from rich.text import Text
 
@@ -225,6 +224,17 @@ def describe(
     """
     import json as json_mod
 
+    # Level 2 discovery when no args in pipe mode (no explicit --json)
+    if command is None and search is None and not json_output:
+        import click
+
+        from anysite.cli.discovery import build_single_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            click_cmd = click.get_current_context().command
+            typer.echo(json_mod.dumps(build_single_command_detail("describe", click_cmd), indent=2))
+            raise typer.Exit(0)
+
     from anysite.api.schemas import get_schema, list_endpoints, search_endpoints
     from anysite.cli.json_output import resolve_json_output
 
@@ -313,8 +323,23 @@ def describe(
 
 
 # Schema management subcommand
-schema_app = typer.Typer(help="Manage API schema cache")
+schema_app = typer.Typer(help="Manage API schema cache", invoke_without_command=True)
 app.add_typer(schema_app, name="schema")
+
+
+@schema_app.callback(invoke_without_command=True)
+def schema_callback(ctx: typer.Context) -> None:
+    """Manage API schema cache."""
+    if ctx.invoked_subcommand is None:
+        import json as _json
+
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            typer.echo(_json.dumps(build_command_detail("schema", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 @schema_app.command("update")
@@ -387,9 +412,9 @@ def schema_update(
 def api_call(
     ctx: typer.Context,
     endpoint: Annotated[
-        str,
+        str | None,
         typer.Argument(help="API endpoint path (e.g., /api/linkedin/user)"),
-    ],
+    ] = None,
     # Output options
     format: Annotated[
         str,
@@ -474,6 +499,17 @@ def api_call(
       anysite api /api/reddit/user user=spez --format table
       anysite api /api/linkedin/user --from-file users.txt --input-key user --parallel 5
     """
+    # Level 2 discovery when no endpoint in pipe mode
+    if endpoint is None:
+        from anysite.cli.discovery import build_single_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            click_cmd = ctx.command
+            typer.echo(json.dumps(build_single_command_detail("api", click_cmd), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
     from pathlib import Path
 
     from anysite.api.schemas import convert_value, get_schema

@@ -14,13 +14,25 @@ from anysite.llm.errors import ConfigError, LLMError
 
 app = typer.Typer(
     help="LLM-powered analysis of collected data",
+    invoke_without_command=True,
     epilog="Run 'anysite llm <command> --help' for details on each command.",
 )
 
 
-@app.callback()
-def llm_callback() -> None:
-    """Check LLM dependencies before running any llm command."""
+@app.callback(invoke_without_command=True)
+def llm_callback(ctx: typer.Context) -> None:
+    """Check LLM dependencies and handle discovery."""
+    if ctx.invoked_subcommand is None:
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            import json
+
+            typer.echo(json.dumps(build_command_detail("llm", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+    # Only check deps when an actual subcommand will run
     check_llm_deps()
 
 
@@ -162,84 +174,160 @@ def _read_prompt_file(prompt_file: Path | None) -> str | None:
 
 
 @app.command("setup")
-def setup() -> None:
-    """Configure LLM provider settings interactively.
+def setup(
+    provider_opt: Annotated[
+        str | None,
+        typer.Option("--provider", help="LLM provider: openai or anthropic"),
+    ] = None,
+    api_key_opt: Annotated[
+        str | None,
+        typer.Option("--api-key", help="API key value"),
+    ] = None,
+    api_key_env_opt: Annotated[
+        str | None,
+        typer.Option("--api-key-env", help="Environment variable name for API key"),
+    ] = None,
+    model_opt: Annotated[
+        str | None,
+        typer.Option("--model", help="Default model ID"),
+    ] = None,
+    no_test: Annotated[
+        bool,
+        typer.Option("--no-test", help="Skip connection test"),
+    ] = False,
+) -> None:
+    """Configure LLM provider settings.
 
     \b
-    Examples:
+    Interactive (human):
       anysite llm setup
+
+    \b
+    Non-interactive (agent):
+      anysite llm setup --provider openai --api-key sk-xxx --no-test
+      anysite llm setup --provider anthropic --api-key-env ANTHROPIC_API_KEY
     """
+    import os
+
     import yaml
 
+    from anysite.cli.json_output import is_non_interactive
     from anysite.config.paths import ensure_config_dir, get_config_path
     from anysite.config.settings import load_yaml_config
 
     console = Console()
-    console.print("[bold]LLM Setup[/bold]\n")
 
-    # Select provider
-    provider = typer.prompt(
-        "Provider",
-        default="openai",
-        type=typer.Choice(["openai", "anthropic"]),
-    )
-
-    # Default env var and model based on provider
-    defaults = {
+    _DEFAULTS: dict[str, tuple[str, str]] = {
         "openai": ("OPENAI_API_KEY", "gpt-4.1-mini"),
         "anthropic": ("ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250514"),
     }
-    default_env, default_model = defaults[provider]
 
-    model = typer.prompt("Default model", default=default_model)
+    non_interactive = is_non_interactive()
 
-    # Ask for API key directly or via env var
-    import os
-
-    api_key = typer.prompt(
-        "API key (paste key or press Enter to use env var)",
-        default="",
-        hide_input=True,
-    )
-
-    api_key_env = ""
-    if not api_key:
-        api_key_env = typer.prompt("API key environment variable", default=default_env)
-        if os.environ.get(api_key_env):
-            console.print(f"[green]Found[/green] {api_key_env} in environment")
+    # --- Resolve provider ---
+    if non_interactive:
+        if not provider_opt:
+            typer.echo(
+                "Error: --provider is required in non-interactive mode.\n"
+                "  anysite llm setup --provider openai --api-key <key>",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if provider_opt not in _DEFAULTS:
+            typer.echo(
+                f"Error: invalid provider '{provider_opt}'. Use 'openai' or 'anthropic'.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        provider = provider_opt
+    else:
+        console.print("[bold]LLM Setup[/bold]\n")
+        if provider_opt and provider_opt in _DEFAULTS:
+            provider = provider_opt
         else:
-            console.print(
-                f"[yellow]Warning:[/yellow] {api_key_env} not set in environment. "
-                f"Set it before using LLM commands."
+            provider = typer.prompt(
+                "Provider",
+                default=provider_opt or "openai",
+                type=typer.Choice(["openai", "anthropic"]),
             )
 
-    # Resolve key for test
+    default_env, default_model = _DEFAULTS[provider]
+
+    # --- Resolve model ---
+    if non_interactive:
+        model = model_opt or default_model
+    elif model_opt:
+        model = model_opt
+    else:
+        model = typer.prompt("Default model", default=default_model)
+
+    # --- Resolve API key ---
+    api_key = api_key_opt or ""
+    api_key_env = api_key_env_opt or ""
+
+    if non_interactive:
+        if not api_key and not api_key_env:
+            typer.echo(
+                "Error: --api-key or --api-key-env is required in non-interactive mode.\n"
+                f"  anysite llm setup --provider {provider} --api-key <key>\n"
+                f"  anysite llm setup --provider {provider} --api-key-env {default_env}",
+                err=True,
+            )
+            raise typer.Exit(1)
+    elif not api_key:
+        api_key = typer.prompt(
+            "API key (paste key or press Enter to use env var)",
+            default="",
+            hide_input=True,
+        )
+        if not api_key:
+            api_key_env = api_key_env or typer.prompt(
+                "API key environment variable", default=default_env,
+            )
+            if os.environ.get(api_key_env):
+                console.print(f"[green]Found[/green] {api_key_env} in environment")
+            else:
+                console.print(
+                    f"[yellow]Warning:[/yellow] {api_key_env} not set in environment. "
+                    f"Set it before using LLM commands."
+                )
+
+    if not api_key_env and not api_key:
+        api_key_env = api_key_env_opt or default_env
+
+    # --- Connection test ---
     test_key = api_key or os.environ.get(api_key_env, "")
 
-    if test_key and typer.confirm("Test the connection?", default=True):
-        try:
-            from anysite.llm.providers import create_provider
+    if test_key and not no_test:
+        should_test = non_interactive or typer.confirm("Test the connection?", default=True)
+        if should_test:
+            try:
+                from anysite.llm.providers import create_provider
 
-            p = create_provider(provider, test_key, model=model)
-            from anysite.llm.models import LLMMessage
+                p = create_provider(provider, test_key, model=model)
+                from anysite.llm.models import LLMMessage
 
-            async def _test() -> Any:
-                try:
-                    return await p.complete(
-                        [LLMMessage(role="user", content="Say 'ok'")],
-                        max_tokens=10,
-                    )
-                finally:
-                    await p.close()
+                async def _test() -> Any:
+                    try:
+                        return await p.complete(
+                            [LLMMessage(role="user", content="Say 'ok'")],
+                            max_tokens=10,
+                        )
+                    finally:
+                        await p.close()
 
-            result = asyncio.run(_test())
-            console.print(f"[green]Connection successful[/green] (model: {result.model})")
-        except Exception as e:
-            console.print(f"[red]Connection failed:[/red] {e}")
-            if not typer.confirm("Save configuration anyway?", default=False):
-                raise typer.Exit(1) from None
+                result = asyncio.run(_test())
+                if not non_interactive:
+                    console.print(f"[green]Connection successful[/green] (model: {result.model})")
+            except Exception as e:
+                if non_interactive:
+                    typer.echo(f"Error: connection test failed: {e}", err=True)
+                    raise typer.Exit(1) from None
+                console.print(f"[red]Connection failed:[/red] {e}")
+                if not typer.confirm("Save configuration anyway?", default=False):
+                    raise typer.Exit(1) from None
 
-    # Write to config
+    # --- Write to config ---
     ensure_config_dir()
     config_path = get_config_path()
 
@@ -266,7 +354,10 @@ def setup() -> None:
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
-    console.print(f"\n[green]Saved[/green] LLM config to {config_path}")
+    if non_interactive:
+        typer.echo(f"Saved LLM config to {config_path}")
+    else:
+        console.print(f"\n[green]Saved[/green] LLM config to {config_path}")
 
 
 @app.command("summarize")

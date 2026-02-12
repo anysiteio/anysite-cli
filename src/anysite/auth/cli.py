@@ -10,8 +10,23 @@ from rich.console import Console
 
 app = typer.Typer(
     help="Authenticate with Anysite (OAuth2)",
-    no_args_is_help=True,
+    invoke_without_command=True,
 )
+
+
+@app.callback(invoke_without_command=True)
+def auth_callback(ctx: typer.Context) -> None:
+    """Auth subsystem entry point."""
+    if ctx.invoked_subcommand is None:
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            import json as _json
+
+            typer.echo(_json.dumps(build_command_detail("auth", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 console = Console()
 
@@ -37,6 +52,10 @@ def login(
         int,
         typer.Option("--timeout", help="Seconds to wait for authentication"),
     ] = 120,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Re-authenticate without confirmation"),
+    ] = False,
 ) -> None:
     """Log in to Anysite via browser-based OAuth2 flow.
 
@@ -53,9 +72,14 @@ def login(
 
     # Check for existing valid token
     existing = store.get_valid_token()
-    if existing and not typer.confirm("Already logged in. Re-authenticate?", default=False):
-        console.print("[dim]Keeping existing session.[/dim]")
-        raise typer.Exit(0)
+    if existing and not force:
+        from anysite.cli.json_output import is_non_interactive
+
+        if is_non_interactive():
+            raise typer.Exit(0)
+        if not typer.confirm("Already logged in. Re-authenticate?", default=False):
+            console.print("[dim]Keeping existing session.[/dim]")
+            raise typer.Exit(0)
 
     console.print("Starting OAuth2 authentication flow...")
     if not no_browser:
@@ -111,9 +135,19 @@ def logout(
         console.print("[dim]Not logged in (no OAuth token stored).[/dim]")
         raise typer.Exit(0)
 
-    if not force and not typer.confirm("Remove stored OAuth token?", default=True):
-        console.print("[dim]Cancelled.[/dim]")
-        raise typer.Exit(0)
+    if not force:
+        from anysite.cli.json_output import is_non_interactive
+
+        if is_non_interactive():
+            typer.echo(
+                "Error: logging out requires confirmation. "
+                "Use --force to skip confirmation in non-interactive mode.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if not typer.confirm("Remove stored OAuth token?", default=True):
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
 
     store.delete()
     console.print("[green]Logged out.[/green] OAuth token removed.")

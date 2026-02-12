@@ -18,6 +18,9 @@ set -euo pipefail
 PACKAGE_NAME="anysite-cli"
 COMMAND_NAME="anysite"
 MIN_PYTHON="3.11"
+SKILL_NAME="anysite-cli"
+SKILL_REPO_URL="https://raw.githubusercontent.com/anysiteio/anysite-cli/main/skills/anysite-cli"
+SKILL_FILES="SKILL.md references/api-reference.md references/dataset-guide.md references/llm-reference.md"
 
 # --- Colors (disabled when not a TTY) ---
 
@@ -266,6 +269,68 @@ do_setup() {
     dim "${COMMAND_NAME} --help"
 }
 
+# --- Claude Code & Skill ---
+
+ensure_claude_code() {
+    if command -v claude &>/dev/null; then
+        dim "Claude Code: $(claude --version 2>/dev/null || echo "installed")"
+        return 0
+    fi
+
+    # Check if npm/node is available
+    if ! command -v npm &>/dev/null; then
+        if ! command -v node &>/dev/null; then
+            dim "Claude Code: skipped (Node.js not installed)"
+            dim "Install Node.js 18+ and run: npm install -g @anthropic-ai/claude-code"
+            return 1
+        fi
+    fi
+
+    info "Installing Claude Code..."
+    if npm install -g @anthropic-ai/claude-code 2>/dev/null; then
+        success "Claude Code installed"
+    else
+        dim "Claude Code: install failed (try: npm install -g @anthropic-ai/claude-code)"
+        return 1
+    fi
+}
+
+install_skill() {
+    local skill_dir="$HOME/.claude/skills/${SKILL_NAME}"
+
+    # Check if skill already exists and is up to date
+    if [[ -f "${skill_dir}/SKILL.md" ]]; then
+        dim "Anysite skill: updating"
+    else
+        dim "Anysite skill: installing"
+    fi
+
+    mkdir -p "${skill_dir}/references"
+
+    local all_ok="true"
+    for file in $SKILL_FILES; do
+        if ! curl -fsSL "${SKILL_REPO_URL}/${file}" -o "${skill_dir}/${file}" 2>/dev/null; then
+            all_ok="false"
+        fi
+    done
+
+    if [[ "$all_ok" == "true" ]]; then
+        dim "Anysite skill installed at ~/.claude/skills/${SKILL_NAME}/"
+    else
+        warn "Some skill files failed to download. Try manually:"
+        dim "mkdir -p ~/.claude/skills/${SKILL_NAME}/references"
+        dim "# Copy SKILL.md and references/ from the anysite-cli repo"
+    fi
+}
+
+uninstall_skill() {
+    local skill_dir="$HOME/.claude/skills/${SKILL_NAME}"
+    if [[ -d "$skill_dir" ]]; then
+        rm -rf "$skill_dir"
+        dim "Removed Claude Code skill"
+    fi
+}
+
 # --- Actions ---
 
 do_install() {
@@ -310,27 +375,33 @@ do_install() {
     export PATH="$HOME/.local/bin:$PATH"
     ensure_path
 
-    # Step 4: Verify and setup
+    # Step 4: Verify
     echo ""
     if command -v "$COMMAND_NAME" &>/dev/null; then
         local version
         version=$("$COMMAND_NAME" --version 2>/dev/null || echo "")
         success "anysite ${version} installed!"
-
-        if [[ "$NO_SETUP" == "true" ]]; then
-            echo ""
-            echo "  Quick start:"
-            dim "${COMMAND_NAME} auth login                              # log in via browser"
-            dim "${COMMAND_NAME} config set api_key YOUR_API_KEY         # or paste key manually"
-            dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
-            dim "${COMMAND_NAME} --help"
-        else
-            do_setup
-        fi
     else
         success "anysite installed!"
         echo ""
         warn "Restart your terminal to use the 'anysite' command."
+    fi
+
+    # Step 5: Claude Code + skill
+    echo ""
+    ensure_claude_code
+    install_skill
+
+    # Step 6: Interactive setup
+    if [[ "$NO_SETUP" == "true" ]]; then
+        echo ""
+        echo "  Quick start:"
+        dim "${COMMAND_NAME} auth login                              # log in via browser"
+        dim "${COMMAND_NAME} config set api_key YOUR_API_KEY         # or paste key manually"
+        dim "${COMMAND_NAME} api /api/linkedin/user user=satyanadella"
+        dim "${COMMAND_NAME} --help"
+    else
+        do_setup
     fi
     echo ""
 }
@@ -361,6 +432,9 @@ do_upgrade() {
     else
         success "Upgrade complete. Restart your terminal."
     fi
+
+    # Update skill
+    install_skill
     echo ""
 }
 
@@ -379,6 +453,9 @@ do_uninstall() {
             rm -f "$bin"
         fi
     fi
+
+    # Remove Claude Code skill
+    uninstall_skill
 
     echo ""
     success "anysite-cli removed"

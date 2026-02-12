@@ -15,9 +15,24 @@ from anysite.db.manager import ConnectionManager
 
 app = typer.Typer(
     help="Store API data in SQL databases",
-    no_args_is_help=True,
+    invoke_without_command=True,
     epilog="Run 'anysite db <command> --help' for details on each command.",
 )
+
+
+@app.callback(invoke_without_command=True)
+def db_callback(ctx: typer.Context) -> None:
+    """Database subsystem entry point."""
+    if ctx.invoked_subcommand is None:
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            import json
+
+            typer.echo(json.dumps(build_command_detail("db", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 def _get_manager() -> ConnectionManager:

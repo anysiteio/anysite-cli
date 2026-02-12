@@ -11,9 +11,24 @@ from anysite.output.console import console, print_error, print_success
 
 app = typer.Typer(
     help="Manage Anysite CLI configuration",
-    no_args_is_help=True,
+    invoke_without_command=True,
     epilog="Run 'anysite config <command> --help' for details on each command.",
 )
+
+
+@app.callback(invoke_without_command=True)
+def config_callback(ctx: typer.Context) -> None:
+    """Config subsystem entry point."""
+    if ctx.invoked_subcommand is None:
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            import json
+
+            typer.echo(json.dumps(build_command_detail("config", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 @app.command("set")

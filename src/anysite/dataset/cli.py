@@ -14,7 +14,7 @@ from anysite.dataset.errors import DatasetError
 
 app = typer.Typer(
     help="Collect, store, and analyze multi-source datasets",
-    no_args_is_help=True,
+    invoke_without_command=True,
     epilog="Run 'anysite dataset <command> --help' for details on each command.",
 )
 
@@ -49,9 +49,20 @@ def _load_config(path: Path, *, json_output: bool = False) -> Any:
         raise typer.Exit(1) from None
 
 
-@app.callback()
-def dataset_callback() -> None:
-    """Check data dependencies before running any dataset command."""
+@app.callback(invoke_without_command=True)
+def dataset_callback(ctx: typer.Context) -> None:
+    """Check data dependencies and handle discovery."""
+    if ctx.invoked_subcommand is None:
+        from anysite.cli.discovery import build_command_detail, is_pipe_mode
+
+        if is_pipe_mode():
+            import json
+
+            typer.echo(json.dumps(build_command_detail("dataset", ctx), indent=2))
+            raise typer.Exit(0)
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+    # Only check deps when an actual subcommand will run
     check_data_deps()
 
 

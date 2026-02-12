@@ -76,10 +76,23 @@ pip install "anysite-cli[clickhouse]"  # ClickHouse adapter
 
 anysite config set api_key sk-xxxxx   # Configure API key
 anysite schema update                  # Update schema cache
-anysite llm setup                      # Configure LLM provider (paste key directly or use env var)
+anysite llm setup                      # Interactive setup (human)
+anysite llm setup --provider openai --api-key sk-xxx --no-test    # Non-interactive (agent)
+anysite llm setup --provider anthropic --api-key-env ANTHROPIC_API_KEY --no-test
 anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
 # Or via env var: anysite db add pg ... --password-env PGPASS
 anysite db add ch --type clickhouse --host ch.example.com --port 8443 --database analytics --user app --password secret --ssl
+```
+
+## Authentication
+
+```bash
+anysite auth login                        # Interactive browser-based OAuth2 (human)
+anysite auth login --force --no-browser   # Re-authenticate without confirmation (agent)
+anysite auth status                       # Check current auth status
+anysite auth status --json                # Machine-readable auth status
+anysite auth logout                       # Interactive logout (human)
+anysite auth logout --force               # Logout without confirmation (agent)
 ```
 
 ## Single API Call
@@ -435,6 +448,12 @@ Supported databases: SQLite, PostgreSQL, ClickHouse. ClickHouse uses `clickhouse
 ## LLM Analysis Commands
 
 Analyze collected dataset records using LLM. Requires `anysite llm setup` first.
+
+Non-interactive setup (for agents):
+```bash
+anysite llm setup --provider openai --api-key <key> --no-test
+anysite llm setup --provider anthropic --api-key-env ANTHROPIC_API_KEY --model claude-sonnet-4-5-20250514 --no-test
+```
 
 ```bash
 anysite llm summarize dataset.yaml --source profiles --fields "name,headline" --format table
