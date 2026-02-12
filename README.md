@@ -14,9 +14,9 @@ A command-line tool designed for AI agents to collect, analyze, and store data f
 
 **LLM analysis without burning tokens.** Offload enrichment, classification, summarization, and deduplication to cheaper LLMs (OpenAI, Anthropic). Results are cached in SQLite — repeat runs cost nothing. Agents keep their context window for reasoning, not data crunching.
 
-**Database-ready output.** Auto-infer schemas from JSON, create tables, and load into SQLite or PostgreSQL with a single command. Foreign keys are linked automatically via provenance tracking. Diff-based incremental sync keeps your database up to date without full reloads.
+**Database-ready output.** Auto-infer schemas from JSON, create tables, and load into SQLite, PostgreSQL, or ClickHouse with a single command. Foreign keys are linked automatically via provenance tracking. Diff-based incremental sync keeps your database up to date without full reloads.
 
-**Database discovery.** Connect any SQLite or PostgreSQL database and auto-discover its structure: tables, columns, types, indexes, foreign keys, row counts, and sample data. Optionally enrich with LLM-generated descriptions — table summaries, column semantics, implicit relationships. Saved catalogs give agents instant context about your data without manual documentation.
+**Database discovery.** Connect any SQLite, PostgreSQL, or ClickHouse database and auto-discover its structure: tables, columns, types, indexes, foreign keys, row counts, and sample data. Optionally enrich with LLM-generated descriptions — table summaries, column semantics, implicit relationships. Saved catalogs give agents instant context about your data without manual documentation.
 
 Supports **LinkedIn** (profiles, companies, jobs, Sales Navigator, email lookup), **Instagram** (profiles, posts, reels, comments), **Twitter/X**, **Reddit**, **YouTube** (channels, videos, subtitles), **Y Combinator**, **SEC EDGAR**, **GitHub**, **Amazon**, **Google News**, **Trustpilot**, **TripAdvisor**, **Hacker News**, web page parsing, and [60+ more sources](https://anysite.io) via the Anysite API.
 
@@ -45,9 +45,10 @@ pip install anysite-cli
 Optional extras:
 
 ```bash
-pip install "anysite-cli[data]"       # DuckDB + PyArrow for dataset pipelines
-pip install "anysite-cli[postgres]"   # PostgreSQL support
-pip install "anysite-cli[all]"        # All optional dependencies
+pip install "anysite-cli[data]"        # DuckDB + PyArrow for dataset pipelines
+pip install "anysite-cli[postgres]"    # PostgreSQL support
+pip install "anysite-cli[clickhouse]"  # ClickHouse support
+pip install "anysite-cli[all]"         # All optional dependencies
 ```
 
 ## Authentication
@@ -517,6 +518,8 @@ Manage database connections and run queries.
 anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
 # Or reference an existing env var
 anysite db add pg --type postgres --host localhost --database mydb --user app --password-env PGPASS
+# ClickHouse connection
+anysite db add ch --type clickhouse --host ch.example.com --port 8443 --database analytics --user app --password secret --ssl
 # Mark connection as read-only (prevents write operations)
 anysite db add replica --type postgres --host replica.example.com --database mydb --user reader --read-only
 
@@ -561,7 +564,7 @@ anysite db catalog mydb --json           # JSON output for agents
 
 Read-only access is auto-detected during discovery. Use `--read-only` on `db add` to force it.
 
-Supports SQLite and PostgreSQL. Passwords stored directly (`--password`) or via env var reference (`--password-env`).
+Supports SQLite, PostgreSQL, and ClickHouse. Passwords stored directly (`--password`) or via env var reference (`--password-env`).
 
 ## LLM Analysis
 

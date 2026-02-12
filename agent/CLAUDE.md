@@ -140,7 +140,7 @@ One-time large collection?
 - User wants SQL querying after collection
 - Data will be updated incrementally over time
 - Related tables need FK relationships
-- User explicitly asks for PostgreSQL/SQLite
+- User explicitly asks for PostgreSQL/SQLite/ClickHouse
 - Use `anysite db discover <name>` to understand the target DB schema before loading
 
 ### 4. Execute
