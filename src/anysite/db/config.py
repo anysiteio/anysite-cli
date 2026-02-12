@@ -16,6 +16,7 @@ class DatabaseType(str, Enum):
     POSTGRES = "postgres"
     MYSQL = "mysql"
     DUCKDB = "duckdb"
+    CLICKHOUSE = "clickhouse"
 
 
 class ConnectionConfig(BaseModel):
@@ -40,7 +41,7 @@ class ConnectionConfig(BaseModel):
         """Validate that required fields are present for the database type."""
         if self.type in (DatabaseType.SQLITE, DatabaseType.DUCKDB) and not self.path:
             raise ValueError(f"{self.type.value} requires 'path'")
-        if self.type in (DatabaseType.POSTGRES, DatabaseType.MYSQL) and not self.url_env and not self.host:
+        if self.type in (DatabaseType.POSTGRES, DatabaseType.MYSQL, DatabaseType.CLICKHOUSE) and not self.url_env and not self.host:
             raise ValueError(f"{self.type.value} requires 'host' or 'url_env'")
         return self
 

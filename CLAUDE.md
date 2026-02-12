@@ -11,6 +11,9 @@ pip install -e ".[dev]"
 # Install with dataset support (duckdb, pyarrow)
 pip install -e ".[dev,data]"
 
+# Install with ClickHouse support
+pip install -e ".[dev,clickhouse]"
+
 # Run all tests
 pytest
 
@@ -81,6 +84,7 @@ anysite llm cache-clear
 anysite db add mydb
 anysite db add pg --type postgres --host localhost --database mydb --user app --password secret
 anysite db add pg --type postgres --host localhost --database mydb --user app --password-env PGPASS
+anysite db add ch --type clickhouse --host ch.example.com --port 8443 --database analytics --user app --password secret --ssl
 anysite db add replica --type postgres --host replica.example.com --read-only
 anysite db list
 anysite db test mydb
@@ -178,12 +182,13 @@ When releasing a new version:
 - `db/adapters/base.py` - `DatabaseAdapter` ABC: connect, execute, fetch, insert_batch, create_table, transaction
 - `db/adapters/sqlite.py` - `SQLiteAdapter`: stdlib sqlite3, WAL mode, FK support, JSON serialization
 - `db/adapters/postgres.py` - `PostgresAdapter`: psycopg v3, JSONB support, parameterized queries
+- `db/adapters/clickhouse.py` - `ClickHouseAdapter`: clickhouse-connect (HTTP), MergeTree engines, no-op transactions, system table introspection
 - `db/schema/inference.py` - `infer_table_schema()`: auto-detect column types from JSON data (integer, float, boolean, date, url, email, json, text)
-- `db/schema/types.py` - `get_sql_type()`: maps inferred types to SQL types per dialect (sqlite, postgres, mysql)
+- `db/schema/types.py` - `get_sql_type()`: maps inferred types to SQL types per dialect (sqlite, postgres, mysql, clickhouse)
 - `db/operations/insert.py` - `insert_from_stream()`: batch insert with auto-create, conflict handling
 - `db/operations/query.py` - `execute_query()`: SQL execution with output formatting
 - `db/utils/sanitize.py` - `sanitize_identifier()`, `sanitize_table_name()`: safe SQL identifier quoting
-- `db/discovery.py` - Data models (`ColumnInfo`, `IndexInfo`, `ForeignKeyInfo`, `ImplicitRelationship`, `TableInfo`, `DatabaseCatalog`) and `DatabaseDiscoverer` engine with dialect-specific introspection (SQLite via PRAGMAs, PostgreSQL via information_schema/pg_catalog). `DatabaseCatalog.to_context_string()` for compact LLM context injection
+- `db/discovery.py` - Data models (`ColumnInfo`, `IndexInfo`, `ForeignKeyInfo`, `ImplicitRelationship`, `TableInfo`, `DatabaseCatalog`) and `DatabaseDiscoverer` engine with dialect-specific introspection (SQLite via PRAGMAs, PostgreSQL via information_schema/pg_catalog, ClickHouse via system tables). `DatabaseCatalog.to_context_string()` for compact LLM context injection
 - `db/catalog.py` - `CatalogStore` — YAML persistence at `~/.anysite/catalogs/<connection>.yaml`. Save/load/list/remove database catalogs
 - `db/llm_describe.py` - `llm_describe_catalog()` — LLM-powered enrichment of catalogs: table descriptions, column descriptions, implicit relationship detection, overall database description. Reuses `LLMProcessor`, `LLMCache`, `StructuredSchema` from `anysite.llm`
 - `db/cli.py` - Typer subcommands: `add`, `list`, `test`, `info`, `remove`, `schema`, `insert`, `upsert`, `query`, `create-table`, `discover`, `catalog`
@@ -228,7 +233,7 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 
 **Dot-Notation Query**: `expand_dot_fields()` converts `urn.value AS id` to `json_extract_string(urn, '$.value') AS id` for DuckDB queries. The `--source` and `--fields` options on `dataset query` auto-generate SQL with dot-notation expansion.
 
-**Dataset DB Loading** (`dataset load-db`): `DatasetDbLoader` loads Parquet data into a relational database (SQLite/Postgres). Features:
+**Dataset DB Loading** (`dataset load-db`): `DatasetDbLoader` loads Parquet data into a relational database (SQLite/Postgres/ClickHouse). Features:
 - Schema inference from Parquet records via `infer_table_schema()`
 - Auto-increment `id` primary key per table
 - FK linking via provenance: parent `_input_value` → child `{parent}_id` column
@@ -249,15 +254,15 @@ Sources are topologically sorted by dependencies. `input_template` allows transf
 
 **LLM Subsystem** (`anysite llm`): LLM-powered analysis of collected dataset records using OpenAI or Anthropic. Supports summarization, classification (with auto-detect), enrichment with structured output, free-form text generation, cross-source record matching, and semantic deduplication. Optional — requires `pip install anysite-cli[llm]`. Registered in `main.py` via try/except ImportError. Configuration stored in `~/.anysite/config.yaml` under `llm:` key. Response caching in SQLite at `~/.anysite/llm_cache.db`. Rate limiting via token bucket, concurrent processing via asyncio semaphore.
 
-**Database Subsystem** (`anysite db`): Named database connections, schema inspection, data insertion, SQL queries. Supports SQLite and PostgreSQL.
+**Database Subsystem** (`anysite db`): Named database connections, schema inspection, data insertion, SQL queries. Supports SQLite, PostgreSQL, and ClickHouse.
 
 **Connection Storage**: `~/.anysite/connections.yaml`. Passwords stored directly (`password`) or via environment variable reference (`password_env`). Direct value takes priority.
 
-**Adapter Pattern**: `DatabaseAdapter` ABC with implementations for SQLite (stdlib) and PostgreSQL (psycopg v3). Context manager for connect/disconnect. Methods: `execute`, `fetch_one`, `fetch_all`, `insert_batch`, `create_table`, `table_exists`, `get_table_schema`, `transaction`.
+**Adapter Pattern**: `DatabaseAdapter` ABC with implementations for SQLite (stdlib), PostgreSQL (psycopg v3), and ClickHouse (clickhouse-connect). Context manager for connect/disconnect. Methods: `execute`, `fetch_one`, `fetch_all`, `insert_batch`, `create_table`, `table_exists`, `get_table_schema`, `transaction`.
 
-**Schema Inference**: `infer_table_schema()` auto-detects column types from JSON data: integer, float, boolean, date, datetime, url, email, json, varchar, text. Type merging across rows. Dialect-aware SQL type mapping (sqlite, postgres, mysql).
+**Schema Inference**: `infer_table_schema()` auto-detects column types from JSON data: integer, float, boolean, date, datetime, url, email, json, varchar, text. Type merging across rows. Dialect-aware SQL type mapping (sqlite, postgres, mysql, clickhouse).
 
-**Database Discovery** (`anysite db discover`): `DatabaseDiscoverer` introspects a connected database via raw SQL, dispatching on dialect (SQLite PRAGMAs vs PostgreSQL information_schema/pg_catalog). Discovers tables, columns (with types, nullability, defaults, PKs), row counts, sample rows, indexes, and foreign keys. Auto-detects read-only status (PostgreSQL via `pg_is_in_recovery()` + transaction test, SQLite via filesystem permission check). The `--read-only` flag on `db add` forces read-only; the `force_read_only` parameter on `discover()` propagates this. Result is a `DatabaseCatalog` dataclass with `to_dict()`/`from_dict()` serialization and `to_context_string()` for compact LLM context injection.
+**Database Discovery** (`anysite db discover`): `DatabaseDiscoverer` introspects a connected database via raw SQL, dispatching on dialect (SQLite PRAGMAs, PostgreSQL information_schema/pg_catalog, ClickHouse system tables). Discovers tables, columns (with types, nullability, defaults, PKs), row counts, sample rows, indexes, and foreign keys. Auto-detects read-only status (PostgreSQL via `pg_is_in_recovery()` + transaction test, SQLite via filesystem permission check, ClickHouse via system.settings/system.grants). The `--read-only` flag on `db add` forces read-only; the `force_read_only` parameter on `discover()` propagates this. Result is a `DatabaseCatalog` dataclass with `to_dict()`/`from_dict()` serialization and `to_context_string()` for compact LLM context injection.
 
 **Database Catalog** (`anysite db catalog`): `CatalogStore` persists `DatabaseCatalog` objects as YAML files at `~/.anysite/catalogs/<connection>.yaml`. Supports save/load/list/remove. Agents use `anysite db catalog --json` to discover available data and `to_context_string()` to inject schema into LLM prompts.
 
