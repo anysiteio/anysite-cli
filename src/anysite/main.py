@@ -286,8 +286,12 @@ def describe(
         typer.echo("Run 'anysite schema update' to refresh the cache.", err=True)
         raise typer.Exit(1)
 
+    from anysite.api.schemas import compact_output
+
+    compact = compact_output(schema.get("output", {}))
+
     if json_output:
-        typer.echo(json_mod.dumps({"input": schema["input"], "output": schema["output"]}))
+        typer.echo(json_mod.dumps({"input": schema["input"], "output": compact}))
     else:
         console = Console()
         desc = schema.get("description", "")
@@ -317,22 +321,11 @@ def describe(
                     console.print(f"    {'':30} [dim]{', '.join(str(h) for h in hints)}[/dim]")
             console.print()
 
-        output_fields = schema.get("output", {})
-        if output_fields:
-            # Count only top-level fields (no dots) for the header
-            top_level = sum(1 for n in output_fields if "." not in n)
-            console.print(f"[bold]Output fields ({top_level}):[/bold]")
-            for name, ftype in output_fields.items():
-                depth = name.count(".")
-                if depth > 0:
-                    indent = "    " + "  " * depth
-                    short = name.rsplit(".", 1)[-1]
-                    pad = max(1, 28 - depth * 2)
-                    console.print(
-                        f"{indent}[dim].{short:<{pad}}[/dim] [dim]{ftype}[/dim]"
-                    )
-                else:
-                    console.print(f"    {name:<30} [dim]{ftype}[/dim]")
+        if compact:
+            console.print(f"[bold]Output fields ({len(compact)}):[/bold]")
+            for name, ftype in compact.items():
+                ftype_display = rich_escape(ftype)
+                console.print(f"    {name:<30} [dim]{ftype_display}[/dim]")
 
 
 # Schema management subcommand

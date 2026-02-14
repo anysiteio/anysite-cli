@@ -404,6 +404,56 @@ def list_endpoints() -> list[dict[str, Any]]:
     ]
 
 
+def compact_output(output: dict[str, str]) -> dict[str, str]:
+    """Collapse expanded dot-notation output to compact single-level representation.
+
+    Converts the fully expanded output::
+
+        {"urn": "object", "urn.type": "string", "urn.value": "string",
+         "reactions": "array[object]", "reactions[].type": "string", ...}
+
+    Into compact form::
+
+        {"urn": "object{type,value}", "reactions": "array[object{type,count}]"}
+
+    This preserves all field names while dramatically reducing token count
+    for LLM/agent consumption.
+    """
+    # Collect immediate children for each top-level field
+    children: dict[str, list[str]] = {}
+    array_children: dict[str, list[str]] = {}
+
+    for key in output:
+        if "." not in key and "[]." not in key:
+            continue
+        # object children: "urn.type" -> parent="urn", child="type"
+        if "[]." not in key and "." in key:
+            parts = key.split(".", 1)
+            parent = parts[0]
+            child_rest = parts[1]
+            # Only immediate children (no further dots)
+            if "." not in child_rest and "[]." not in child_rest:
+                children.setdefault(parent, []).append(child_rest)
+        # array item children: "reactions[].type" -> parent="reactions", child="type"
+        elif "[]." in key:
+            parent, child_rest = key.split("[].", 1)
+            if "." not in parent and "." not in child_rest and "[]." not in child_rest:
+                array_children.setdefault(parent, []).append(child_rest)
+
+    result: dict[str, str] = {}
+    for key, type_str in output.items():
+        # Skip nested keys
+        if "." in key or "[]." in key:
+            continue
+        if type_str == "object" and key in children:
+            result[key] = f"object{{{','.join(children[key])}}}"
+        elif type_str == "array[object]" and key in array_children:
+            result[key] = f"array[object{{{','.join(array_children[key])}}}]"
+        else:
+            result[key] = type_str
+    return result
+
+
 def convert_value(value: str, type_hint: str) -> str | int | bool | float | list | dict:
     """Convert a string value to the type specified in the schema.
 
