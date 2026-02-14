@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Discriminator,
+    Field,
+    PrivateAttr,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
 
 # ---------------------------------------------------------------------------
-# New models for transform / export / schedule / notifications
+# Models for transform / export / schedule / notifications
 # ---------------------------------------------------------------------------
 
 
@@ -95,6 +103,48 @@ class DbLoadConfig(BaseModel):
         default_factory=lambda: ["_input_value", "_parent_source"],
         description="Fields to exclude (default: provenance metadata)",
     )
+    filter: str | None = Field(
+        default=None,
+        description="Filter expression for DB loading (e.g., '.active == true')",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Structured LLM enrich field spec (alternative to string DSL)
+# ---------------------------------------------------------------------------
+
+
+class EnrichFieldSpec(BaseModel):
+    """Structured alternative for LLM enrich field specification.
+
+    Use instead of string format like ``"sentiment:positive/negative/neutral"``.
+    Both formats are accepted in ``LLMStepConfig.add``.
+    """
+
+    name: str = Field(description="Output field name")
+    type: Literal["string", "integer", "number", "boolean"] | None = Field(
+        default=None,
+        description="Field type (mutually exclusive with 'values')",
+    )
+    values: list[str] | None = Field(
+        default=None,
+        description="Enum values (e.g., ['positive', 'negative', 'neutral'])",
+    )
+    min: int | None = Field(default=None, description="Minimum value for integer ranges")
+    max: int | None = Field(default=None, description="Maximum value for integer ranges")
+
+    @model_validator(mode="after")
+    def validate_spec(self) -> EnrichFieldSpec:
+        if self.values and self.type:
+            raise ValueError("Cannot set both 'type' and 'values' — use one or the other")
+        if not self.values and not self.type:
+            # Default to string if neither specified
+            object.__setattr__(self, "type", "string")
+        if self.min is not None or self.max is not None:
+            if self.type and self.type != "integer":
+                raise ValueError("'min'/'max' only valid with type='integer'")
+            object.__setattr__(self, "type", "integer")
+        return self
 
 
 class LLMStepConfig(BaseModel):
@@ -104,9 +154,13 @@ class LLMStepConfig(BaseModel):
         description="LLM operation type"
     )
     # enrich-specific
-    add: list[str] = Field(
+    add: list[str | EnrichFieldSpec] = Field(
         default_factory=list,
-        description="Field specs for enrich: 'name:type_or_values' (e.g., 'sentiment:positive/negative/neutral')",
+        description=(
+            "Field specs for enrich. String format: 'name:type_or_values' "
+            "(e.g., 'sentiment:positive/negative/neutral'). "
+            "Structured format: {name, type, values, min, max}."
+        ),
     )
     # classify-specific
     categories: str | None = Field(
@@ -145,38 +199,63 @@ class LLMStepConfig(BaseModel):
         return self
 
 
-class DatasetSource(BaseModel):
-    """A single data source within a dataset."""
+# ---------------------------------------------------------------------------
+# Discriminated union: source types
+# ---------------------------------------------------------------------------
+
+
+class _SourceBase(BaseModel):
+    """Fields shared by all source types (api, llm, union)."""
 
     id: str = Field(description="Unique source identifier")
-    type: Literal["api", "llm", "union"] = Field(
-        default="api",
-        description="Source type: 'api' for API collection, 'llm' for LLM-only processing, 'union' for combining sources",
-    )
-    sources: list[str] | None = Field(
+    filter: str | None = Field(
         default=None,
-        description="Source IDs to union (for type='union' only)",
+        description="Early filter expression — applied after collection, before LLM and Parquet write",
     )
-    dedupe_by: str | None = Field(
-        default=None,
-        description="Field path for deduplication in union (dot-notation)",
-    )
-    endpoint: str | None = Field(
-        default=None,
-        description="API endpoint path (e.g., /api/linkedin/search/users). Required for type=api.",
-    )
-    params: dict[str, Any] = Field(default_factory=dict, description="Static API parameters")
     dependency: SourceDependency | None = Field(
         default=None,
         description="Dependency on another source",
     )
+    llm: list[LLMStepConfig] = Field(
+        default_factory=list,
+        description="LLM enrichment steps (after collection, before Parquet write)",
+    )
+    transform: TransformConfig | None = Field(
+        default=None,
+        description="Post-collection transform (filter/fields/add_columns)",
+    )
+    export: list[ExportDestination] = Field(
+        default_factory=list,
+        description="Export destinations (file/webhook) applied after Parquet write",
+    )
+    db_load: DbLoadConfig | None = Field(
+        default=None,
+        description="Database loading configuration (optional)",
+    )
+    refresh: Literal["auto", "always"] = Field(
+        default="auto",
+        description="Refresh mode: 'auto' uses incremental caching, 'always' re-collects every run",
+    )
+
+
+class ApiSource(_SourceBase):
+    """API collection source — makes HTTP calls to an endpoint."""
+
+    type: Literal["api"] = Field(
+        default="api",
+        description="Source type: 'api' for API collection",
+    )
+    endpoint: str = Field(
+        description="API endpoint path (e.g., /api/linkedin/search/users)",
+    )
+    params: dict[str, Any] = Field(default_factory=dict, description="Static API parameters")
     input_key: str | None = Field(
         default=None,
         description="Parameter name for dependent input values",
     )
     input_template: dict[str, Any] | None = Field(
         default=None,
-        description="Template for input value — use {value} placeholder (e.g., {type: company, value: '{value}'})",
+        description="Template for input value — use {value} placeholder",
     )
     from_file: str | None = Field(
         default=None,
@@ -186,68 +265,71 @@ class DatasetSource(BaseModel):
         default=None,
         description="Column name to extract from CSV input file",
     )
-    parallel: int = Field(default=1, ge=1, description="Parallel requests for dependent collection")
+    parallel: int = Field(default=1, ge=1, description="Parallel requests for batch collection")
     rate_limit: str | None = Field(default=None, description="Rate limit (e.g., '10/s')")
     on_error: str = Field(default="skip", description="Error handling: stop or skip")
-    db_load: DbLoadConfig | None = Field(
-        default=None,
-        description="Database loading configuration (optional)",
-    )
-    transform: TransformConfig | None = Field(
-        default=None,
-        description="Post-collection transform (filter/fields/add_columns)",
-    )
-    llm: list[LLMStepConfig] = Field(
-        default_factory=list,
-        description="LLM enrichment steps (after collection, before Parquet write)",
-    )
-    export: list[ExportDestination] = Field(
-        default_factory=list,
-        description="Export destinations (file/webhook) applied after Parquet write",
-    )
-    refresh: Literal["auto", "always"] = Field(
-        default="auto",
-        description="Refresh mode: 'auto' uses incremental caching, 'always' re-collects every run",
-    )
 
     @field_validator("endpoint")
     @classmethod
-    def validate_endpoint(cls, v: str | None) -> str | None:
-        if v is not None and not v.startswith("/"):
+    def validate_endpoint(cls, v: str) -> str:
+        if not v.startswith("/"):
             raise ValueError(f"Endpoint must start with '/', got: {v}")
         return v
 
+
+class LlmSource(_SourceBase):
+    """LLM-only processing source — reads parent data through LLM steps, no API calls."""
+
+    type: Literal["llm"] = Field(
+        description="Source type: 'llm' for LLM-only processing",
+    )
+
     @model_validator(mode="after")
-    def validate_source_type(self) -> DatasetSource:
-        """Validate source configuration based on type."""
-        if self.type == "llm":
-            if self.endpoint is not None:
-                raise ValueError("LLM source cannot have endpoint (no API calls)")
-            if not self.dependency:
-                raise ValueError("LLM source must have a dependency (parent source to process)")
-            if not self.llm:
-                raise ValueError("LLM source must have at least one LLM step")
-            if self.from_file is not None:
-                raise ValueError("LLM source cannot have from_file")
-            if self.input_key is not None:
-                raise ValueError("LLM source cannot have input_key")
-        elif self.type == "union":
-            if not self.sources:
-                raise ValueError("Union source must have non-empty 'sources' list")
-            if self.endpoint is not None:
-                raise ValueError("Union source cannot have endpoint")
-            if self.dependency is not None:
-                raise ValueError("Union source cannot have dependency")
-            if self.from_file is not None:
-                raise ValueError("Union source cannot have from_file")
-            if self.input_key is not None:
-                raise ValueError("Union source cannot have input_key")
-            if self.params:
-                raise ValueError("Union source cannot have params")
-        else:  # type == "api"
-            if self.endpoint is None:
-                raise ValueError("API source requires endpoint")
+    def validate_llm_requirements(self) -> LlmSource:
+        if not self.dependency:
+            raise ValueError("LLM source must have a dependency (parent source to process)")
+        if not self.llm:
+            raise ValueError("LLM source must have at least one LLM step")
         return self
+
+
+class UnionSource(_SourceBase):
+    """Union source — combines records from multiple parent sources."""
+
+    type: Literal["union"] = Field(
+        description="Source type: 'union' for combining sources",
+    )
+    sources: list[str] = Field(
+        description="Source IDs to union (all must have the same endpoint)",
+    )
+    dedupe_by: str | None = Field(
+        default=None,
+        description="Field path for deduplication in union (dot-notation)",
+    )
+
+
+def _source_discriminator(v: Any) -> str:
+    """Determine source type for discriminated union.
+
+    Defaults to 'api' when type is not specified (backward compatibility).
+    """
+    if isinstance(v, dict):
+        return v.get("type", "api")
+    return getattr(v, "type", "api")
+
+
+DatasetSource = Annotated[
+    Annotated[ApiSource, Tag("api")]
+    | Annotated[LlmSource, Tag("llm")]
+    | Annotated[UnionSource, Tag("union")],
+    Discriminator(_source_discriminator),
+]
+"""A dataset source — discriminated union of ApiSource, LlmSource, UnionSource."""
+
+
+# ---------------------------------------------------------------------------
+# Storage + top-level config
+# ---------------------------------------------------------------------------
 
 
 class StorageConfig(BaseModel):
@@ -277,7 +359,9 @@ class DatasetConfig(BaseModel):
 
     @field_validator("sources")
     @classmethod
-    def validate_unique_ids(cls, v: list[DatasetSource]) -> list[DatasetSource]:
+    def validate_unique_ids(
+        cls, v: list[ApiSource | LlmSource | UnionSource],
+    ) -> list[ApiSource | LlmSource | UnionSource]:
         ids = [s.id for s in v]
         dupes = [sid for sid in ids if ids.count(sid) > 1]
         if dupes:
@@ -289,14 +373,15 @@ class DatasetConfig(BaseModel):
         """Validate that union sources reference sources with same endpoint."""
         source_map = {s.id: s for s in self.sources}
         for source in self.sources:
-            if source.type == "union" and source.sources:
+            if isinstance(source, UnionSource):
                 endpoints: set[str] = set()
                 for src_id in source.sources:
                     if src_id not in source_map:
                         raise SourceNotFoundError(src_id, source.id)
                     parent = source_map[src_id]
-                    if parent.endpoint:
-                        endpoints.add(parent.endpoint)
+                    endpoint = getattr(parent, "endpoint", None)
+                    if endpoint:
+                        endpoints.add(endpoint)
                 if len(endpoints) > 1:
                     raise ValueError(
                         f"Union source '{source.id}' references sources with different endpoints: {endpoints}"
@@ -312,14 +397,14 @@ class DatasetConfig(BaseModel):
         config._config_dir = path.resolve().parent
         return config
 
-    def get_source(self, source_id: str) -> DatasetSource | None:
+    def get_source(self, source_id: str) -> ApiSource | LlmSource | UnionSource | None:
         """Get a source by ID."""
         for s in self.sources:
             if s.id == source_id:
                 return s
         return None
 
-    def topological_sort(self) -> list[DatasetSource]:
+    def topological_sort(self) -> list[ApiSource | LlmSource | UnionSource]:
         """Sort sources by dependency order using Kahn's algorithm.
 
         Returns:
@@ -343,7 +428,7 @@ class DatasetConfig(BaseModel):
                 in_degree[source.id] += 1
                 dependents[parent_id].append(source.id)
             # Handle union sources - depend on all listed sources
-            if source.type == "union" and source.sources:
+            if isinstance(source, UnionSource):
                 for parent_id in source.sources:
                     if parent_id not in source_map:
                         raise SourceNotFoundError(parent_id, source.id)
@@ -356,7 +441,7 @@ class DatasetConfig(BaseModel):
             if degree == 0:
                 queue.append(sid)
 
-        result: list[DatasetSource] = []
+        result: list[ApiSource | LlmSource | UnionSource] = []
         while queue:
             sid = queue.popleft()
             result.append(source_map[sid])

@@ -3,7 +3,7 @@
 import pytest
 
 from anysite.dataset.analyzer import DatasetAnalyzer
-from anysite.dataset.models import DatasetConfig, DatasetSource, StorageConfig
+from anysite.dataset.models import ApiSource, DatasetConfig, StorageConfig
 from anysite.dataset.storage import get_source_dir, write_parquet
 
 
@@ -22,7 +22,7 @@ def _make_config(tmp_path, sources_data=None):
 
     sources = []
     for source_id, records in sources_data.items():
-        sources.append(DatasetSource(id=source_id, endpoint=f"/api/{source_id}"))
+        sources.append(ApiSource(id=source_id, endpoint=f"/api/{source_id}"))
         source_dir = get_source_dir(data_path, source_id)
         write_parquet(records, source_dir / "2025-01-01.parquet")
 
@@ -91,7 +91,7 @@ class TestProfile:
     def test_profile_missing_source(self, tmp_path):
         config = DatasetConfig(
             name="test",
-            sources=[DatasetSource(id="missing", endpoint="/api/missing")],
+            sources=[ApiSource(id="missing", endpoint="/api/missing")],
             storage=StorageConfig(path=str(tmp_path / "data")),
         )
         with DatasetAnalyzer(config) as analyzer:

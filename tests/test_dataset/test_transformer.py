@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from anysite.dataset.models import TransformConfig
-from anysite.dataset.transformer import FilterParseError, RecordTransformer
+from anysite.dataset.transformer import FilterParseError, RecordTransformer, parse_filter, validate_filter
 
 
 # ---------------------------------------------------------------------------
@@ -75,15 +75,92 @@ class TestFilter:
         assert t.apply(records) == records
 
     def test_invalid_filter_raises(self) -> None:
-        with pytest.raises(FilterParseError):
+        with pytest.raises(FilterParseError, match="Unexpected character"):
             config = TransformConfig(filter="invalid expression")
             RecordTransformer(config)
+
+    def test_single_equals_suggests_double(self) -> None:
+        with pytest.raises(FilterParseError, match="did you mean '=='"):
+            parse_filter(".score = 5")
+
+    def test_double_ampersand_suggests_and(self) -> None:
+        with pytest.raises(FilterParseError, match="did you mean 'and'"):
+            parse_filter(".a > 1 && .b > 2")
+
+    def test_double_pipe_suggests_or(self) -> None:
+        with pytest.raises(FilterParseError, match="did you mean 'or'"):
+            parse_filter(".a > 1 || .b > 2")
 
     def test_missing_field_returns_false(self) -> None:
         config = TransformConfig(filter=".missing > 0")
         t = RecordTransformer(config)
         records = [{"other": 1}]
         assert t.apply(records) == []
+
+    def test_boolean_true(self) -> None:
+        config = TransformConfig(filter=".active == true")
+        t = RecordTransformer(config)
+        records = [{"active": True}, {"active": False}]
+        assert t.apply(records) == [{"active": True}]
+
+    def test_boolean_false(self) -> None:
+        config = TransformConfig(filter=".hidden == false")
+        t = RecordTransformer(config)
+        records = [{"hidden": True}, {"hidden": False}]
+        assert t.apply(records) == [{"hidden": False}]
+
+    def test_boolean_not_equal(self) -> None:
+        config = TransformConfig(filter=".active != false")
+        t = RecordTransformer(config)
+        records = [{"active": True}, {"active": False}]
+        assert t.apply(records) == [{"active": True}]
+
+    def test_boolean_with_integer_coercion(self) -> None:
+        """Booleans should match 0/1 integer values."""
+        config = TransformConfig(filter=".flag == false")
+        t = RecordTransformer(config)
+        records = [{"flag": 0}, {"flag": 1}, {"flag": False}, {"flag": True}]
+        result = t.apply(records)
+        assert len(result) == 2
+        assert result[0] == {"flag": 0}
+        assert result[1] == {"flag": False}
+
+    def test_boolean_combined_with_other(self) -> None:
+        config = TransformConfig(filter='.active == true and .role == "admin"')
+        t = RecordTransformer(config)
+        records = [
+            {"active": True, "role": "admin"},
+            {"active": True, "role": "user"},
+            {"active": False, "role": "admin"},
+        ]
+        assert t.apply(records) == [{"active": True, "role": "admin"}]
+
+
+# ---------------------------------------------------------------------------
+# Public parse_filter API
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilter:
+    def test_returns_callable(self) -> None:
+        fn = parse_filter(".count > 10")
+        assert fn is not None
+        assert fn({"count": 15}) is True
+        assert fn({"count": 5}) is False
+
+    def test_empty_returns_none(self) -> None:
+        assert parse_filter("") is None
+        assert parse_filter("   ") is None
+
+    def test_boolean_true(self) -> None:
+        fn = parse_filter(".active == true")
+        assert fn({"active": True}) is True
+        assert fn({"active": False}) is False
+
+    def test_boolean_false(self) -> None:
+        fn = parse_filter(".hidden == false")
+        assert fn({"hidden": False}) is True
+        assert fn({"hidden": True}) is False
 
 
 # ---------------------------------------------------------------------------

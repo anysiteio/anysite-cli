@@ -15,7 +15,7 @@ from anysite.batch.executor import BatchExecutor
 from anysite.batch.rate_limiter import RateLimiter
 from anysite.cli.options import ErrorHandling
 from anysite.dataset.errors import DatasetError
-from anysite.dataset.models import DatasetConfig, DatasetSource
+from anysite.dataset.models import ApiSource, DatasetConfig, DatasetSource, LlmSource, UnionSource
 from anysite.dataset.storage import (
     MetadataStore,
     get_parquet_path,
@@ -139,18 +139,20 @@ async def collect_dataset(
                     continue
 
             if not quiet:
-                if source.type == "union":
+                if isinstance(source, UnionSource):
                     print_info(
-                        f"Collecting {source.id} (union of {', '.join(source.sources or [])})..."
+                        f"Collecting {source.id} (union of {', '.join(source.sources)})..."
                     )
+                elif isinstance(source, LlmSource):
+                    print_info(f"Collecting {source.id} (LLM processing)...")
                 else:
                     print_info(f"Collecting {source.id} from {source.endpoint}...")
 
-            if source.type == "union":
+            if isinstance(source, UnionSource):
                 records = await _collect_union(source, base_path, quiet=quiet)
-            elif source.type == "llm":
+            elif isinstance(source, LlmSource):
                 records = await _collect_llm(source, base_path, quiet=quiet)
-            elif source.from_file is not None:
+            elif isinstance(source, ApiSource) and source.from_file is not None:
                 file_base = config_dir if config_dir else Path.cwd()
                 records = await _collect_from_file(
                     source,
@@ -159,16 +161,27 @@ async def collect_dataset(
                     incremental=incremental,
                     quiet=quiet,
                 )
-            elif source.dependency is None:
+            elif isinstance(source, ApiSource) and source.dependency is None:
                 records = await _collect_independent(source)
             else:
                 records = await _collect_dependent(
-                    source,
+                    source,  # type: ignore[arg-type]
                     base_path,
                     metadata=metadata,
                     incremental=incremental,
                     quiet=quiet,
                 )
+
+            # Apply source-level filter (before LLM and Parquet write)
+            if source.filter and records:
+                from anysite.dataset.transformer import parse_filter
+
+                pred = parse_filter(source.filter)
+                if pred:
+                    before = len(records)
+                    records = [r for r in records if pred(r)]
+                    if not quiet and len(records) != before:
+                        print_info(f"  Filter: {before} -> {len(records)} records")
 
             # LLM enrichment (after collection, before Parquet write)
             if source.llm and records and not no_llm:
@@ -256,10 +269,8 @@ async def collect_dataset(
     return results
 
 
-async def _collect_independent(source: DatasetSource) -> list[dict[str, Any]]:
+async def _collect_independent(source: ApiSource) -> list[dict[str, Any]]:
     """Collect an independent source (single API call)."""
-    if source.endpoint is None:
-        raise DatasetError(f"Source {source.id} has no endpoint defined")
     async with create_client() as client:
         data = await client.post(source.endpoint, data=source.params)
     # API returns list[dict] or dict
@@ -269,7 +280,7 @@ async def _collect_independent(source: DatasetSource) -> list[dict[str, Any]]:
 
 
 async def _collect_from_file(
-    source: DatasetSource,
+    source: ApiSource,
     *,
     config_dir: Path,
     metadata: MetadataStore | None = None,
@@ -335,7 +346,7 @@ async def _collect_from_file(
 
 
 async def _collect_batch(
-    source: DatasetSource,
+    source: ApiSource,
     values: list[Any],
     *,
     parent_source: str | None = None,
@@ -347,8 +358,6 @@ async def _collect_batch(
     - ``_input_value``: the raw value used to make the API call
     - ``_parent_source``: the source ID that produced the input (if dependent)
     """
-    if source.endpoint is None:
-        raise DatasetError(f"Source {source.id} has no endpoint defined")
     endpoint = source.endpoint  # capture for closure
 
     limiter = RateLimiter(source.rate_limit) if source.rate_limit else None
@@ -440,14 +449,12 @@ def _flatten_results(results: list[Any]) -> list[dict[str, Any]]:
 
 
 async def _collect_union(
-    source: DatasetSource,
+    source: UnionSource,
     base_path: Path,
     *,
     quiet: bool = False,
 ) -> list[dict[str, Any]]:
     """Collect by combining records from multiple parent sources."""
-    if not source.sources:
-        raise DatasetError(f"Union source {source.id} has no sources defined")
 
     all_records: list[dict[str, Any]] = []
 
@@ -493,7 +500,7 @@ def _dedupe_records(records: list[dict[str, Any]], field: str) -> list[dict[str,
 
 
 async def _collect_llm(
-    source: DatasetSource,
+    source: LlmSource,
     base_path: Path,
     *,
     quiet: bool = False,
@@ -524,7 +531,7 @@ async def _collect_llm(
 
 
 async def _collect_dependent(
-    source: DatasetSource,
+    source: ApiSource,
     base_path: Path,
     *,
     metadata: MetadataStore | None = None,
@@ -685,7 +692,7 @@ def _filter_sources(
             if src.dependency:
                 stack.append(src.dependency.from_source)
             # Also include union parent sources
-            if src.type == "union" and src.sources:
+            if isinstance(src, UnionSource):
                 stack.extend(src.sources)
 
     return [s for s in ordered if s.id in required]
@@ -711,10 +718,10 @@ def _build_plan(
 
         llm_steps = len(source.llm) if source.llm else 0
 
-        if source.type == "union":
+        if isinstance(source, UnionSource):
             # Union source: reads and combines multiple parents, no API calls
             total = 0
-            for parent_id in source.sources or []:
+            for parent_id in source.sources:
                 parent_dir = base_path / "raw" / parent_id
                 parent_records = read_latest_parquet(parent_dir)
                 total += len(parent_records) if parent_records else 0
@@ -722,12 +729,12 @@ def _build_plan(
                 source_id=source.id,
                 endpoint=None,
                 kind="union",
-                dependency=",".join(source.sources or []),
+                dependency=",".join(source.sources),
                 estimated_requests=total,
                 refresh=source.refresh,
                 llm_steps=llm_steps,
             )
-        elif source.type == "llm":
+        elif isinstance(source, LlmSource):
             # LLM-only source: reads parent data, no API calls
             est = _count_dependent_inputs(source, base_path, metadata)
             plan.add_step(
@@ -739,7 +746,7 @@ def _build_plan(
                 refresh=source.refresh,
                 llm_steps=llm_steps,
             )
-        elif source.from_file is not None:
+        elif isinstance(source, ApiSource) and source.from_file is not None:
             est = _count_file_inputs(source, config_dir)
             plan.add_step(
                 source_id=source.id,
@@ -750,7 +757,7 @@ def _build_plan(
                 refresh=source.refresh,
                 llm_steps=llm_steps,
             )
-        elif source.dependency is None:
+        elif isinstance(source, ApiSource) and source.dependency is None:
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
@@ -760,13 +767,13 @@ def _build_plan(
                 refresh=source.refresh,
                 llm_steps=llm_steps,
             )
-        else:
+        elif isinstance(source, ApiSource):
             est = _count_dependent_inputs(source, base_path, metadata)
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
                 kind="dependent",
-                dependency=source.dependency.from_source,
+                dependency=source.dependency.from_source if source.dependency else None,
                 estimated_requests=est,
                 refresh=source.refresh,
                 llm_steps=llm_steps,
@@ -791,7 +798,7 @@ def _count_dependent_inputs(
     return len(values)
 
 
-def _count_file_inputs(source: DatasetSource, config_dir: Path | None) -> int | None:
+def _count_file_inputs(source: ApiSource, config_dir: Path | None) -> int | None:
     """Count input values in a from_file source."""
     if not source.from_file:
         return None

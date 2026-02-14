@@ -68,6 +68,8 @@ anysite dataset guide --section sources
 anysite dataset guide --example advanced
 anysite dataset guide --list
 anysite dataset guide --json
+anysite dataset validate dataset.yaml
+anysite dataset validate dataset.yaml --json
 
 # LLM commands
 anysite llm setup                                                    # Interactive (human)
@@ -163,21 +165,22 @@ When releasing a new version:
 - `utils/fields.py` - Field selection with dot notation, array wildcards, built-in presets (minimal, contact, recruiting)
 - `utils/retry.py` - RetryConfig and retry logic
 - `dataset/__init__.py` - `check_data_deps()` — verifies optional duckdb/pyarrow are installed
-- `dataset/models.py` - Pydantic models for dataset YAML config (`DatasetConfig`, `DatasetSource`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`), topological sort (Kahn's algorithm)
+- `dataset/models.py` - Pydantic models for dataset YAML config. `DatasetSource` is a discriminated union of `ApiSource`, `LlmSource`, `UnionSource` (with `_SourceBase` shared fields), selected by `_source_discriminator()` (defaults to `"api"`). `EnrichFieldSpec` provides structured alternative to string-based LLM add specs. Other models: `DatasetConfig`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`, `DbLoadConfig`. Topological sort (Kahn's algorithm)
 - `dataset/storage.py` - Parquet read/write via pyarrow, directory layout (`raw/<source_id>/<date>.parquet`), `MetadataStore` for `metadata.json`
 - `dataset/collector.py` - Collection orchestrator: topo-sorted execution, four source types (independent, from_file, dependent, union), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
-- `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records
+- `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records. `_parse_add_specs()` accepts both string format and structured `EnrichFieldSpec` objects
 - `dataset/analyzer.py` - DuckDB analytics: SQL query, column stats, profile, interactive shell. Registers views over Parquet files
-- `dataset/transformer.py` - `RecordTransformer`: safe filter parser (no `eval()`), field selection with dot-notation/aliases, static column injection. Filter syntax: `.field > 10`, `.status == "active"`, `and`/`or`
+- `dataset/transformer.py` - `RecordTransformer`: safe filter parser (no `eval()`), field selection with dot-notation/aliases, static column injection. Public `parse_filter()` function used by collector, db_loader, and RecordTransformer. `validate_filter()` returns error messages without raising (used by validator). Filter diagnostics detect common typos (`=` -> `==`, `&&` -> `and`, `||` -> `or`). Filter syntax: `.field > 10`, `.status == "active"`, `.active == true`, `and`/`or`
 - `dataset/exporters.py` - Per-source export after Parquet write: `FileExporter` (JSON/JSONL/CSV with `{{date}}`/`{{source}}` templates), `WebhookExporter` (POST records to URL)
 - `dataset/history.py` - `HistoryStore` (SQLite at `~/.anysite/dataset_history.db`): run start/finish tracking. `LogManager`: file-based per-run logs at `~/.anysite/logs/`
 - `dataset/scheduler.py` - `ScheduleGenerator`: crontab and systemd timer unit generation from cron expressions
 - `dataset/notifications.py` - `WebhookNotifier`: POST to webhook URLs on collection complete/failure
 - `dataset/differ.py` - `DatasetDiffer`: compare two Parquet snapshots using DuckDB (added/removed/changed records). Supports dot-notation keys via `json_extract_string()`. `DiffResult` dataclass, `format_diff_table()` and `format_diff_records()` formatters with output field filtering
-- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`, `guide`
+- `dataset/cli.py` - Typer subcommands: `init`, `collect` (with `--load-db`), `status`, `query`, `stats`, `profile`, `load-db`, `diff`, `history`, `logs`, `schedule`, `reset-cursor`, `guide`, `validate`
 - `dataset/db_loader.py` - `DatasetDbLoader`: loads Parquet data into relational DB with FK linking via provenance, dot-notation field extraction, schema inference, diff-based incremental sync (`db_load.key` + `db_load.sync: full|append`). Supports diff-based incremental sync via `db_load.key` and `--snapshot` for loading specific dates
 - `dataset/errors.py` - `DatasetError`, `CircularDependencyError`, `SourceNotFoundError`. All inherit from `AnysiteError` with `error_code` and `exit_code` for structured error output
-- `dataset/guide.py` - Built-in dataset configuration guide: `GUIDE_SECTIONS` dict with `GuideSection` dataclasses covering all source types, params, dependencies, LLM, transforms, exports, db_load, storage, scheduling, notifications, incremental. `EXAMPLE_CONFIGS` dict with complete YAML examples. Used by `anysite dataset guide` command with `--section`, `--example`, `--list`, `--json` options
+- `dataset/guide.py` - Built-in dataset configuration guide: `GUIDE_SECTIONS` dict with `GuideSection` dataclasses covering all source types, params, dependencies, LLM, transforms, exports, db_load, storage, scheduling, notifications, incremental, validation. `EXAMPLE_CONFIGS` dict with complete YAML examples. Used by `anysite dataset guide` command with `--section`, `--example`, `--list`, `--json` options
+- `dataset/validator.py` - `validate_dataset_config()`: fast config validation (<0.1s, no API calls). Checks dependency graph, filter expressions (with typo diagnostics), LLM add specs (string and `EnrichFieldSpec`). Returns `ValidationResult` with `errors` and `warnings`. Used by `anysite dataset validate` command
 - `llm/__init__.py` - `check_llm_deps()`, `load_llm_config()`, `get_api_key()` — verifies optional openai/anthropic are installed, loads LLM config from `~/.anysite/config.yaml`. `get_api_key()` resolves direct `api_key` first, then `api_key_env` fallback
 - `llm/models.py` - Dataclass models: `LLMProviderConfig` (with `api_key` direct + `api_key_env` fallback), `LLMConfig`, `LLMMessage`, `LLMResponse`, `StructuredSchema`, `ProcessorResult`
 - `llm/errors.py` - `LLMError`, `ConfigError`, `ProviderError`, `PromptError`. All inherit from `AnysiteError` with `error_code`, `exit_code`, and `retryable` for structured error output
@@ -224,6 +227,12 @@ When releasing a new version:
 - **Union** (`type: union`) — combines records from multiple parent sources into one (`sources` list + optional `dedupe_by`). All parent sources must have the same endpoint. Useful for merging multiple search results before a single dependent source
 
 Sources are topologically sorted by dependencies. `input_template` allows transforming extracted values before passing to API (e.g., `{type: company, value: "{value}"}`). Nested objects stored as JSON strings in Parquet are auto-parsed back when extracting with dot-notation paths.
+
+**Three-Level Filtering**: The pipeline supports filtering at three independent stages:
+- **Level 1 — `source.filter`**: Applied after collection, before LLM enrichment and Parquet write. Drops records entirely. Saves LLM tokens on irrelevant records.
+- **Level 2 — `transform.filter`**: Applied after Parquet write, before exports only. Full records preserved in Parquet for dependency resolution.
+- **Level 3 — `db_load.filter`**: Applied when loading records into a relational database. Parquet unchanged.
+All three levels use the same safe expression syntax: `.field op value` with `and`/`or` combinators, supporting numbers, strings, booleans (`true`/`false`), and `null`.
 
 **Per-Source Transform**: Optional `transform` block per source with `filter` (safe expression parser, e.g., `.count > 10 and .status == "active"`), `fields` (select/rename with dot-notation aliases), and `add_columns` (inject static values). Transforms apply to export destinations only — Parquet always stores full records to preserve dependency resolution.
 

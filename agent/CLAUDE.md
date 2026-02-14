@@ -90,8 +90,16 @@ anysite describe --search "<keyword>"        # Search by keyword (linkedin, comp
 anysite describe /api/linkedin/company       # Inspect specific endpoint: input params + output fields
 ```
 
-`anysite describe` shows nested object/array structure with dot-notation. For example:
+`anysite describe` shows input parameters with types, descriptions, examples, and defaults — plus output fields with nested object/array structure. For example:
 ```
+Input parameters:
+  * urn                            string      User URN, only fsd_profile urn type is allowed
+                                               example: "urn:li:fsd_profile:ACoAABXy1234"
+    count                          integer     Number of posts to return
+                                               default: 20
+    companies                      array[object{type,value}]  Company URNs
+                                               example: [{"type": "company", "value": "14064608"}]
+
 Output fields (15):
     name                           string
     urn                            object
@@ -101,6 +109,8 @@ Output fields (15):
       .title                       string
 ```
 Use these dot-notation paths (e.g., `urn.value`) in `dependency.field`, `--fields`, and `db_load.fields`.
+
+**Key for agents:** Input param examples and defaults tell you exact expected formats — use them directly in `params`, `input_template`, and `key=value` CLI args. Array params like `companies` show item structure (e.g., `array[object{type,value}]`).
 
 Map the data need to specific endpoints. Common chains:
 - Search → Detail (find entities, then get full profiles)
@@ -162,6 +172,7 @@ anysite dataset collect dataset.yaml
 
 **Execution rules:**
 - Always `--dry-run` before the first collection of a new pipeline
+- Always `anysite dataset validate dataset.yaml` before collecting — catches config errors early
 - `parallel: 3-5` is a safe default for batch sources
 - `on_error: skip` for large batches — one bad input shouldn't stop everything
 - `--incremental` for re-runs to avoid duplicate work
@@ -298,6 +309,44 @@ storage:
   format: parquet
   path: ./data/
 ```
+
+### Three-Level Filtering
+Filter records at different pipeline stages. Saves LLM tokens and controls what goes where.
+```yaml
+sources:
+  - id: comments
+    endpoint: /api/linkedin/post/comments
+    dependency: { from_source: posts, field: urn.value }
+    input_key: urn
+    parallel: 5
+  - id: analyzed
+    type: llm
+    dependency: { from_source: comments, field: urn.value }
+    filter: '.is_commenter_post_author == false'  # Level 1: before LLM (saves tokens)
+    llm:
+      - type: enrich
+        add: ["score:1-10", "is_llm:boolean"]
+        fields: [text, author]
+    transform:
+      filter: '.score > 5'                        # Level 2: export only
+      fields: [text, author, score, is_llm]
+    export:
+      - type: file
+        path: ./output/flagged-{{date}}.csv
+        format: csv
+    db_load:
+      filter: '.is_llm == true'                    # Level 3: DB only
+      table: flagged_comments
+      fields: [text, author, score, is_llm]
+storage:
+  format: parquet
+  path: ./data/
+```
+**Filter levels:**
+- `source.filter` — drops records before LLM + Parquet (saves tokens)
+- `transform.filter` — filters before exports only (Parquet keeps all)
+- `db_load.filter` — filters before DB loading (Parquet keeps all)
+All use the same syntax: `.field == value`, `.active == true`, `and`/`or` combinators.
 
 ### Incremental Daily Pipeline
 Scheduled collection that only gets new data.

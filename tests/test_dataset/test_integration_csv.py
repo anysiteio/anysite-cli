@@ -14,7 +14,7 @@ from anysite.dataset.differ import (
     format_diff_records,
     format_diff_table,
 )
-from anysite.dataset.models import DatasetConfig, DatasetSource
+from anysite.dataset.models import ApiSource, DatasetConfig
 from anysite.dataset.storage import MetadataStore, write_parquet
 
 CSV_PATH = Path(__file__).resolve().parent.parent.parent / "test_data" / "enriched_partners_sample_10.csv"
@@ -247,7 +247,7 @@ class TestRefreshAlwaysWithCsvFromFile:
         config = DatasetConfig(
             name="test-refresh",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="companies",
                     endpoint="/api/linkedin/company",
                     from_file=str(CSV_PATH),

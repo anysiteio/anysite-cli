@@ -5,6 +5,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape as rich_escape
 
 from anysite import __app_name__, __version__
 from anysite.cli import config as config_cli
@@ -301,7 +302,19 @@ def describe(
                 req = "[red]*[/red]" if info.get("required") else " "
                 desc = info.get("description", "")
                 desc_part = f"  [dim italic]{desc}[/dim italic]" if desc else ""
-                console.print(f"  {req} {name:<30} [dim]{info['type']:<10}[/dim]{desc_part}")
+                type_str = info.get("type", "string")
+                type_display = rich_escape(type_str)
+                console.print(f"  {req} {name:<30} [dim]{type_display}[/dim]{desc_part}")
+                # Show examples and defaults on next line
+                hints = []
+                if "examples" in info:
+                    ex = info["examples"][0] if info["examples"] else None
+                    if ex is not None:
+                        hints.append(f"example: {json.dumps(ex, default=str)}")
+                if "default" in info and info["default"] is not None:
+                    hints.append(f"default: {info['default']}")
+                if hints:
+                    console.print(f"    {'':30} [dim]{', '.join(str(h) for h in hints)}[/dim]")
             console.print()
 
         output_fields = schema.get("output", {})

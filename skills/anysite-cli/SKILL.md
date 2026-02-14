@@ -64,6 +64,18 @@ anysite config get api_key
 anysite describe                          # List all endpoints
 anysite describe --search "company"       # Search by keyword
 anysite describe /api/linkedin/company    # Full details: input params + output fields
+anysite describe /api/linkedin/company --json  # Machine-readable with examples + defaults
+```
+
+Input params show type, description, examples, and defaults. Array params show item structure:
+```
+Input parameters:
+  * urn                            string      User URN, only fsd_profile urn type is allowed
+                                               example: "urn:li:fsd_profile:ACoAABXy1234"
+    count                          integer     Number of posts to return
+                                               default: 20
+    companies                      array[object{type,value}]  Company URNs
+                                               example: [{"type": "company", "value": "14064608"}]
 ```
 
 ## Prerequisites
@@ -234,12 +246,18 @@ sources:
     # NOTE: type: llm cannot have endpoint, from_file, input_key, params
 
   # === OPTIONAL BLOCKS (any source type) ===
+  # THREE-LEVEL FILTERING:
+  # Level 1: source.filter — before LLM + Parquet (saves tokens, drops records entirely)
+  # Level 2: transform.filter — before exports only (Parquet keeps all records)
+  # Level 3: db_load.filter — before DB loading (Parquet keeps all records)
+  # All use same syntax: .field op value, booleans (true/false), and/or
   - id: profiles
     endpoint: /api/linkedin/user
     dependency: { from_source: employees, field: internal_id.value }
     input_key: user
-    transform:                      # Transform for exports only (Parquet keeps all)
-      filter: '.follower_count > 100 and .location != ""'  # Safe expression
+    filter: '.follower_count > 100'  # Level 1: early filter (before LLM + Parquet)
+    transform:                      # Level 2: export filter (Parquet keeps all)
+      filter: '.location != ""'     # Safe expression
       fields:                       # Field selection with dot-notation aliases
         - name
         - urn.value AS urn_id
@@ -254,6 +272,7 @@ sources:
         url: https://example.com/hook
         headers: { X-Token: abc }
     db_load:                        # Database loading config
+      filter: '.active == true'     # Level 3: DB filter (only active to DB)
       table: people                 # Custom table name (default: source ID)
       key: urn.value                # Unique key for diff-based incremental sync
       sync: full                    # Sync mode: full (default) | append (no DELETE)
@@ -328,9 +347,10 @@ The `type: llm` source processes existing parent data without making API calls:
 anysite dataset collect dataset.yaml --source employees_analyzed
 ```
 
-### Collect Commands
+### Validate & Collect Commands
 
 ```bash
+anysite dataset validate dataset.yaml                    # Validate config (catches errors early)
 anysite dataset collect dataset.yaml --dry-run          # Preview plan
 anysite dataset collect dataset.yaml                     # Run collection
 anysite dataset collect dataset.yaml --load-db pg       # Collect + auto-load to DB

@@ -71,7 +71,7 @@ class TestBuildSchemaFromSpecs:
 
     def test_range_becomes_integer(self):
         props, req = _build_schema_from_specs({"score": "1-10"})
-        assert props["score"] == {"type": "integer"}
+        assert props["score"] == {"type": "integer", "minimum": 1, "maximum": 10}
 
     def test_number_type(self):
         props, req = _build_schema_from_specs({"weight": "number"})

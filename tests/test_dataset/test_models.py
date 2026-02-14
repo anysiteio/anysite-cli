@@ -6,7 +6,16 @@ import pytest
 import yaml
 
 from anysite.dataset.errors import CircularDependencyError, SourceNotFoundError
-from anysite.dataset.models import DatasetConfig, DatasetSource, LLMStepConfig, SourceDependency, StorageConfig
+from anysite.dataset.models import (
+    ApiSource,
+    DatasetConfig,
+    EnrichFieldSpec,
+    LLMStepConfig,
+    LlmSource,
+    SourceDependency,
+    StorageConfig,
+    UnionSource,
+)
 
 
 class TestSourceDependency:
@@ -24,7 +33,7 @@ class TestSourceDependency:
 
 class TestDatasetSource:
     def test_basic(self):
-        src = DatasetSource(id="test", endpoint="/api/linkedin/user")
+        src = ApiSource(id="test", endpoint="/api/linkedin/user")
         assert src.id == "test"
         assert src.endpoint == "/api/linkedin/user"
         assert src.params == {}
@@ -32,10 +41,10 @@ class TestDatasetSource:
 
     def test_invalid_endpoint(self):
         with pytest.raises(ValueError, match="must start with '/'"):
-            DatasetSource(id="test", endpoint="api/linkedin/user")
+            ApiSource(id="test", endpoint="api/linkedin/user")
 
     def test_with_dependency(self):
-        src = DatasetSource(
+        src = ApiSource(
             id="posts",
             endpoint="/api/linkedin/user/posts",
             dependency=SourceDependency(from_source="profiles", field="urn"),
@@ -49,25 +58,24 @@ class TestDatasetSource:
 
 
 class TestLLMSourceType:
-    """Tests for type='llm' sources."""
+    """Tests for LlmSource type."""
 
     def test_llm_source_valid(self):
         """LLM source with dependency and llm steps is valid."""
-        src = DatasetSource(
+        src = LlmSource(
             id="enriched",
             type="llm",
             dependency=SourceDependency(from_source="profiles", field="urn"),
             llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
         )
         assert src.type == "llm"
-        assert src.endpoint is None
         assert src.dependency is not None
         assert len(src.llm) == 1
 
     def test_llm_source_requires_dependency(self):
         """LLM source without dependency raises error."""
         with pytest.raises(ValueError, match="must have a dependency"):
-            DatasetSource(
+            LlmSource(
                 id="enriched",
                 type="llm",
                 llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
@@ -76,53 +84,20 @@ class TestLLMSourceType:
     def test_llm_source_requires_llm_steps(self):
         """LLM source without llm steps raises error."""
         with pytest.raises(ValueError, match="must have at least one LLM step"):
-            DatasetSource(
+            LlmSource(
                 id="enriched",
                 type="llm",
                 dependency=SourceDependency(from_source="profiles", field="urn"),
-            )
-
-    def test_llm_source_cannot_have_endpoint(self):
-        """LLM source with endpoint raises error."""
-        with pytest.raises(ValueError, match="cannot have endpoint"):
-            DatasetSource(
-                id="enriched",
-                type="llm",
-                endpoint="/api/something",
-                dependency=SourceDependency(from_source="profiles", field="urn"),
-                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
-            )
-
-    def test_llm_source_cannot_have_from_file(self):
-        """LLM source with from_file raises error."""
-        with pytest.raises(ValueError, match="cannot have from_file"):
-            DatasetSource(
-                id="enriched",
-                type="llm",
-                from_file="./data.txt",
-                dependency=SourceDependency(from_source="profiles", field="urn"),
-                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
-            )
-
-    def test_llm_source_cannot_have_input_key(self):
-        """LLM source with input_key raises error."""
-        with pytest.raises(ValueError, match="cannot have input_key"):
-            DatasetSource(
-                id="enriched",
-                type="llm",
-                input_key="user",
-                dependency=SourceDependency(from_source="profiles", field="urn"),
-                llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
             )
 
     def test_api_source_requires_endpoint(self):
-        """API source (default type) without endpoint raises error."""
-        with pytest.raises(ValueError, match="requires endpoint"):
-            DatasetSource(id="test", type="api")
+        """API source without endpoint raises error."""
+        with pytest.raises(ValueError, match="Field required"):
+            ApiSource(id="test")
 
     def test_default_type_is_api(self):
         """Default source type is 'api'."""
-        src = DatasetSource(id="test", endpoint="/api/test")
+        src = ApiSource(id="test", endpoint="/api/test")
         assert src.type == "api"
 
 
@@ -131,7 +106,7 @@ class TestDatasetConfig:
         config = DatasetConfig(
             name="test-ds",
             sources=[
-                DatasetSource(id="src1", endpoint="/api/test"),
+                ApiSource(id="src1", endpoint="/api/test"),
             ],
         )
         assert config.name == "test-ds"
@@ -142,8 +117,8 @@ class TestDatasetConfig:
             DatasetConfig(
                 name="test",
                 sources=[
-                    DatasetSource(id="same", endpoint="/api/a"),
-                    DatasetSource(id="same", endpoint="/api/b"),
+                    ApiSource(id="same", endpoint="/api/a"),
+                    ApiSource(id="same", endpoint="/api/b"),
                 ],
             )
 
@@ -178,8 +153,8 @@ class TestDatasetConfig:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="a", endpoint="/api/a"),
-                DatasetSource(id="b", endpoint="/api/b"),
+                ApiSource(id="a", endpoint="/api/a"),
+                ApiSource(id="b", endpoint="/api/b"),
             ],
         )
         assert config.get_source("a") is not None
@@ -189,7 +164,7 @@ class TestDatasetConfig:
     def test_storage_path(self):
         config = DatasetConfig(
             name="test",
-            sources=[DatasetSource(id="a", endpoint="/api/a")],
+            sources=[ApiSource(id="a", endpoint="/api/a")],
             storage=StorageConfig(path="./data/my-ds/"),
         )
         assert config.storage_path() == Path("./data/my-ds/")
@@ -200,8 +175,8 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="a", endpoint="/api/a"),
-                DatasetSource(id="b", endpoint="/api/b"),
+                ApiSource(id="a", endpoint="/api/a"),
+                ApiSource(id="b", endpoint="/api/b"),
             ],
         )
         ordered = config.topological_sort()
@@ -212,14 +187,14 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="a", endpoint="/api/a"),
-                DatasetSource(
+                ApiSource(id="a", endpoint="/api/a"),
+                ApiSource(
                     id="b",
                     endpoint="/api/b",
                     dependency=SourceDependency(from_source="a", field="id"),
                     input_key="parent_id",
                 ),
-                DatasetSource(
+                ApiSource(
                     id="c",
                     endpoint="/api/c",
                     dependency=SourceDependency(from_source="b", field="id"),
@@ -236,14 +211,14 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="root", endpoint="/api/root"),
-                DatasetSource(
+                ApiSource(id="root", endpoint="/api/root"),
+                ApiSource(
                     id="left",
                     endpoint="/api/left",
                     dependency=SourceDependency(from_source="root", field="id"),
                     input_key="id",
                 ),
-                DatasetSource(
+                ApiSource(
                     id="right",
                     endpoint="/api/right",
                     dependency=SourceDependency(from_source="root", field="id"),
@@ -259,13 +234,13 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="a",
                     endpoint="/api/a",
                     dependency=SourceDependency(from_source="b", field="id"),
                     input_key="id",
                 ),
-                DatasetSource(
+                ApiSource(
                     id="b",
                     endpoint="/api/b",
                     dependency=SourceDependency(from_source="a", field="id"),
@@ -280,7 +255,7 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="a",
                     endpoint="/api/a",
                     dependency=SourceDependency(from_source="nonexistent", field="id"),
@@ -296,13 +271,13 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
                 ),
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
             ],
         )
         ordered = config.topological_sort()
@@ -316,8 +291,8 @@ class TestTopologicalSort:
             DatasetConfig(
                 name="test",
                 sources=[
-                    DatasetSource(id="a", endpoint="/api/a"),
-                    DatasetSource(
+                    ApiSource(id="a", endpoint="/api/a"),
+                    UnionSource(
                         id="combined",
                         type="union",
                         sources=["a", "nonexistent"],
@@ -330,14 +305,14 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
-                DatasetSource(
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
                 ),
-                DatasetSource(
+                ApiSource(
                     id="profiles",
                     endpoint="/api/profiles",
                     dependency=SourceDependency(from_source="combined", field="urn"),
@@ -355,9 +330,9 @@ class TestTopologicalSort:
             DatasetConfig(
                 name="test",
                 sources=[
-                    DatasetSource(id="users", endpoint="/api/users"),
-                    DatasetSource(id="companies", endpoint="/api/companies"),
-                    DatasetSource(
+                    ApiSource(id="users", endpoint="/api/users"),
+                    ApiSource(id="companies", endpoint="/api/companies"),
+                    UnionSource(
                         id="combined",
                         type="union",
                         sources=["users", "companies"],
@@ -370,9 +345,9 @@ class TestTopologicalSort:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
-                DatasetSource(
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
@@ -385,11 +360,11 @@ class TestTopologicalSort:
 
 
 class TestUnionSourceType:
-    """Tests for type='union' sources."""
+    """Tests for UnionSource type."""
 
     def test_union_source_valid(self):
         """Union source with sources list is valid."""
-        src = DatasetSource(
+        src = UnionSource(
             id="combined",
             type="union",
             sources=["search_a", "search_b"],
@@ -399,67 +374,12 @@ class TestUnionSourceType:
 
     def test_union_source_requires_sources(self):
         """Union source without sources raises error."""
-        with pytest.raises(ValueError, match="must have non-empty 'sources'"):
-            DatasetSource(id="combined", type="union")
-
-    def test_union_source_empty_sources_raises(self):
-        """Union source with empty sources list raises error."""
-        with pytest.raises(ValueError, match="must have non-empty 'sources'"):
-            DatasetSource(id="combined", type="union", sources=[])
-
-    def test_union_source_cannot_have_endpoint(self):
-        """Union source with endpoint raises error."""
-        with pytest.raises(ValueError, match="cannot have endpoint"):
-            DatasetSource(
-                id="combined",
-                type="union",
-                endpoint="/api/test",
-                sources=["a", "b"],
-            )
-
-    def test_union_source_cannot_have_dependency(self):
-        """Union source with dependency raises error."""
-        with pytest.raises(ValueError, match="cannot have dependency"):
-            DatasetSource(
-                id="combined",
-                type="union",
-                sources=["a", "b"],
-                dependency=SourceDependency(from_source="x", field="y"),
-            )
-
-    def test_union_source_cannot_have_from_file(self):
-        """Union source with from_file raises error."""
-        with pytest.raises(ValueError, match="cannot have from_file"):
-            DatasetSource(
-                id="combined",
-                type="union",
-                sources=["a", "b"],
-                from_file="./data.txt",
-            )
-
-    def test_union_source_cannot_have_input_key(self):
-        """Union source with input_key raises error."""
-        with pytest.raises(ValueError, match="cannot have input_key"):
-            DatasetSource(
-                id="combined",
-                type="union",
-                sources=["a", "b"],
-                input_key="user",
-            )
-
-    def test_union_source_cannot_have_params(self):
-        """Union source with params raises error."""
-        with pytest.raises(ValueError, match="cannot have params"):
-            DatasetSource(
-                id="combined",
-                type="union",
-                sources=["a", "b"],
-                params={"count": 10},
-            )
+        with pytest.raises(ValueError, match="Field required"):
+            UnionSource(id="combined", type="union")
 
     def test_union_with_dedupe_by(self):
         """Union source with dedupe_by is valid."""
-        src = DatasetSource(
+        src = UnionSource(
             id="combined",
             type="union",
             sources=["a", "b"],
@@ -499,7 +419,7 @@ class TestStoragePath:
         """Programmatic config (no from_yaml) falls back to relative path."""
         config = DatasetConfig(
             name="test",
-            sources=[DatasetSource(id="s1", endpoint="/api/s1")],
+            sources=[ApiSource(id="s1", endpoint="/api/s1")],
             storage=StorageConfig(path="./my_data/"),
         )
         assert config.storage_path() == Path("./my_data/")
@@ -562,7 +482,7 @@ class TestLLMStepConfig:
         assert step.output_column == "role"
 
     def test_source_with_llm_steps(self):
-        src = DatasetSource(
+        src = ApiSource(
             id="test",
             endpoint="/api/test",
             llm=[
@@ -575,5 +495,35 @@ class TestLLMStepConfig:
         assert src.llm[1].type == "summarize"
 
     def test_source_without_llm_defaults_empty(self):
-        src = DatasetSource(id="test", endpoint="/api/test")
+        src = ApiSource(id="test", endpoint="/api/test")
         assert src.llm == []
+
+
+class TestEnrichFieldSpec:
+    def test_string_type(self):
+        spec = EnrichFieldSpec(name="summary")
+        assert spec.type == "string"  # defaults to string
+
+    def test_enum_values(self):
+        spec = EnrichFieldSpec(name="sentiment", values=["positive", "negative", "neutral"])
+        assert spec.values == ["positive", "negative", "neutral"]
+
+    def test_integer_range(self):
+        spec = EnrichFieldSpec(name="score", type="integer", min=1, max=10)
+        assert spec.type == "integer"
+        assert spec.min == 1
+        assert spec.max == 10
+
+    def test_type_and_values_conflict(self):
+        with pytest.raises(ValueError, match="Cannot set both"):
+            EnrichFieldSpec(name="x", type="string", values=["a", "b"])
+
+    def test_structured_in_llm_step(self):
+        step = LLMStepConfig(
+            type="enrich",
+            add=[
+                EnrichFieldSpec(name="score", type="integer", min=1, max=10),
+                "sentiment:positive/negative",
+            ],
+        )
+        assert len(step.add) == 2

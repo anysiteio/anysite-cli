@@ -5,8 +5,8 @@ import pytest
 
 from anysite.dataset.db_loader import DatasetDbLoader, LoadResult, _extract_dot_value, _filter_record
 from anysite.dataset.models import (
+    ApiSource,
     DatasetConfig,
-    DatasetSource,
     DbLoadConfig,
     SourceDependency,
     StorageConfig,
@@ -51,13 +51,13 @@ class TestExtractDotValue:
 
 class TestFilterRecord:
     def test_excludes_provenance_by_default(self):
-        source = DatasetSource(id="test", endpoint="/api/test")
+        source = ApiSource(id="test", endpoint="/api/test")
         record = {"name": "Alice", "_input_value": "x", "_parent_source": "p", "age": 30}
         result = _filter_record(record, source)
         assert result == {"name": "Alice", "age": 30}
 
     def test_explicit_fields(self):
-        source = DatasetSource(
+        source = ApiSource(
             id="test", endpoint="/api/test",
             db_load=DbLoadConfig(fields=["name", "age"]),
         )
@@ -66,7 +66,7 @@ class TestFilterRecord:
         assert result == {"name": "Alice", "age": 30}
 
     def test_dot_notation_fields(self):
-        source = DatasetSource(
+        source = ApiSource(
             id="test", endpoint="/api/test",
             db_load=DbLoadConfig(
                 fields=["name", "meta.type AS role"],
@@ -79,7 +79,7 @@ class TestFilterRecord:
 
 class TestLoadSingleSource:
     def test_creates_table_and_inserts(self, tmp_path):
-        sources = [DatasetSource(id="profiles", endpoint="/api/profiles")]
+        sources = [ApiSource(id="profiles", endpoint="/api/profiles")]
         config = _make_config(tmp_path, sources)
 
         source_dir = get_source_dir(tmp_path / "data", "profiles")
@@ -108,7 +108,7 @@ class TestLoadSingleSource:
             assert rows[1]["id"] == 2
 
     def test_schema_inferred_correctly(self, tmp_path):
-        sources = [DatasetSource(id="items", endpoint="/api/items")]
+        sources = [ApiSource(id="items", endpoint="/api/items")]
         config = _make_config(tmp_path, sources)
 
         source_dir = get_source_dir(tmp_path / "data", "items")
@@ -134,8 +134,8 @@ class TestForeignKeyLinking:
     def test_parent_child_fk(self, tmp_path):
         """Child records get correct FK to parent via _input_value."""
         sources = [
-            DatasetSource(id="companies", endpoint="/api/companies"),
-            DatasetSource(
+            ApiSource(id="companies", endpoint="/api/companies"),
+            ApiSource(
                 id="employees",
                 endpoint="/api/employees",
                 dependency=SourceDependency(from_source="companies", field="urn"),
@@ -188,8 +188,8 @@ class TestForeignKeyLinking:
     def test_no_provenance_fk_is_null(self, tmp_path):
         """Records without _input_value get NULL FK."""
         sources = [
-            DatasetSource(id="parent", endpoint="/api/parent"),
-            DatasetSource(
+            ApiSource(id="parent", endpoint="/api/parent"),
+            ApiSource(
                 id="child",
                 endpoint="/api/child",
                 dependency=SourceDependency(from_source="parent", field="key"),
@@ -221,7 +221,7 @@ class TestForeignKeyLinking:
 class TestDbLoadConfig:
     def test_field_selection(self, tmp_path):
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(fields=["name", "score"]),
             ),
@@ -246,7 +246,7 @@ class TestDbLoadConfig:
 
     def test_dot_notation_extraction(self, tmp_path):
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(
                     fields=["name", "meta.type AS role", "meta.id AS uid"],
@@ -276,7 +276,7 @@ class TestDbLoadConfig:
 
     def test_custom_table_name(self, tmp_path):
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="linkedin-profiles", endpoint="/api/profiles",
                 db_load=DbLoadConfig(table="people"),
             ),
@@ -297,7 +297,7 @@ class TestDbLoadConfig:
 
 class TestDryRun:
     def test_no_tables_created(self, tmp_path):
-        sources = [DatasetSource(id="items", endpoint="/api/items")]
+        sources = [ApiSource(id="items", endpoint="/api/items")]
         config = _make_config(tmp_path, sources)
 
         source_dir = get_source_dir(tmp_path / "data", "items")
@@ -314,7 +314,7 @@ class TestDryRun:
 
 class TestDropExisting:
     def test_drop_and_recreate(self, tmp_path):
-        sources = [DatasetSource(id="items", endpoint="/api/items")]
+        sources = [ApiSource(id="items", endpoint="/api/items")]
         config = _make_config(tmp_path, sources)
 
         source_dir = get_source_dir(tmp_path / "data", "items")
@@ -335,7 +335,7 @@ class TestDropExisting:
 
 class TestEmptySource:
     def test_no_parquet_returns_zero(self, tmp_path):
-        sources = [DatasetSource(id="empty", endpoint="/api/empty")]
+        sources = [ApiSource(id="empty", endpoint="/api/empty")]
         config = _make_config(tmp_path, sources)
 
         adapter = _sqlite_adapter()
@@ -357,7 +357,7 @@ class TestDiffBasedSync:
     def test_inserts_added_records(self, tmp_path):
         """New records in the latest snapshot are INSERTed."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -403,7 +403,7 @@ class TestDiffBasedSync:
     def test_deletes_removed_records(self, tmp_path):
         """Records missing from the latest snapshot are DELETEd."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -442,7 +442,7 @@ class TestDiffBasedSync:
     def test_updates_changed_records(self, tmp_path):
         """Records with changed values are UPDATEd."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -478,7 +478,7 @@ class TestDiffBasedSync:
     def test_combined_add_remove_update(self, tmp_path):
         """Test all three operations in a single sync."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -524,7 +524,7 @@ class TestDiffBasedSync:
     def test_no_key_falls_back_to_full_insert(self, tmp_path):
         """Without db_load.key, load-db does full INSERT of latest snapshot."""
         sources = [
-            DatasetSource(id="items", endpoint="/api/items"),
+            ApiSource(id="items", endpoint="/api/items"),
         ]
         config = _make_config(tmp_path, sources)
 
@@ -558,7 +558,7 @@ class TestSnapshotLoading:
 
     def test_load_specific_snapshot(self, tmp_path):
         sources = [
-            DatasetSource(id="items", endpoint="/api/items"),
+            ApiSource(id="items", endpoint="/api/items"),
         ]
         config = _make_config(tmp_path, sources)
 
@@ -585,7 +585,7 @@ class TestSnapshotLoading:
             assert rows[0]["score"] == 90
 
     def test_snapshot_not_found(self, tmp_path):
-        sources = [DatasetSource(id="items", endpoint="/api/items")]
+        sources = [ApiSource(id="items", endpoint="/api/items")]
         config = _make_config(tmp_path, sources)
 
         source_dir = get_source_dir(tmp_path / "data", "items")
@@ -603,7 +603,7 @@ class TestDropExistingWithDiffKey:
 
     def test_drop_existing_ignores_diff(self, tmp_path):
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -648,7 +648,7 @@ class TestAppendSyncMode:
     def test_append_keeps_removed_records(self, tmp_path):
         """With sync: append, records missing from new snapshot are NOT deleted."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="posts", endpoint="/api/posts",
                 db_load=DbLoadConfig(key="uid", sync="append"),
             ),
@@ -700,7 +700,7 @@ class TestAppendSyncMode:
     def test_full_sync_deletes_removed_records(self, tmp_path):
         """With sync: full (default), removed records ARE deleted."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="posts", endpoint="/api/posts",
                 db_load=DbLoadConfig(key="uid", sync="full"),
             ),
@@ -748,7 +748,7 @@ class TestPostgresPlaceholders:
     def test_delete_uses_percent_s(self, tmp_path):
         """DELETE query uses %s placeholder for postgres."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name", sync="full"),
             ),
@@ -796,7 +796,7 @@ class TestPostgresPlaceholders:
     def test_update_uses_percent_s(self, tmp_path):
         """UPDATE query uses %s placeholders for postgres."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name"),
             ),
@@ -846,7 +846,7 @@ class TestUpdateFieldFiltering:
     def test_update_only_db_load_fields(self, tmp_path):
         """UPDATE should skip fields not in db_load.fields."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name", fields=["name", "score"]),
             ),
@@ -885,7 +885,7 @@ class TestUpdateFieldFiltering:
     def test_update_with_dot_notation_alias(self, tmp_path):
         """UPDATE uses correct DB column name for aliased dot-notation fields."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(
                     key="meta.id",
@@ -928,7 +928,7 @@ class TestUpdateFieldFiltering:
     def test_update_skipped_when_no_db_fields_changed(self, tmp_path):
         """If only non-DB fields changed, no UPDATE should happen."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name", fields=["name", "score"]),
             ),
@@ -971,7 +971,7 @@ class TestAutoIncludeKey:
     def test_key_auto_included_in_fields(self, tmp_path):
         """db_load.fields = [url, text], key = name → name column auto-created."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name", fields=["url", "text"]),
             ),
@@ -1020,7 +1020,7 @@ class TestAutoIncludeKey:
     def test_dot_key_auto_included(self, tmp_path):
         """db_load.fields = [text], key = meta.id → meta_id column auto-created."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="meta.id", fields=["text"]),
             ),
@@ -1069,7 +1069,7 @@ class TestAutoIncludeKey:
     def test_key_already_in_fields_not_duplicated(self, tmp_path):
         """If key is already in fields, it should not be added twice."""
         sources = [
-            DatasetSource(
+            ApiSource(
                 id="items", endpoint="/api/items",
                 db_load=DbLoadConfig(key="name", fields=["name", "score"]),
             ),
@@ -1090,3 +1090,151 @@ class TestAutoIncludeKey:
             rows = adapter.fetch_all("SELECT * FROM items")
             assert rows[0]["name"] == "Alice"
             assert rows[0]["score"] == 90
+
+
+# ---------------------------------------------------------------------------
+# db_load.filter
+# ---------------------------------------------------------------------------
+
+
+class TestDbLoadFilter:
+    def test_filter_excludes_records(self, tmp_path):
+        """db_load.filter prevents records from being inserted."""
+        sources = [
+            ApiSource(
+                id="items",
+                endpoint="/api/items",
+                db_load=DbLoadConfig(filter=".score > 50"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [
+                {"name": "Alice", "score": 80},
+                {"name": "Bob", "score": 30},
+                {"name": "Carol", "score": 60},
+            ],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            result = loader.load_all()
+
+            assert result["items"].row_count == 2
+            rows = adapter.fetch_all("SELECT name FROM items ORDER BY name")
+            names = [r["name"] for r in rows]
+            assert "Alice" in names
+            assert "Carol" in names
+            assert "Bob" not in names
+
+    def test_filter_none_is_noop(self, tmp_path):
+        """When db_load.filter is None, all records are loaded."""
+        sources = [
+            ApiSource(
+                id="items",
+                endpoint="/api/items",
+                db_load=DbLoadConfig(filter=None),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [{"name": "Alice"}, {"name": "Bob"}],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            result = loader.load_all()
+            assert result["items"].row_count == 2
+
+    def test_filter_with_boolean(self, tmp_path):
+        """db_load.filter supports boolean literals."""
+        sources = [
+            ApiSource(
+                id="items",
+                endpoint="/api/items",
+                db_load=DbLoadConfig(filter=".active == true"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [
+                {"name": "Alice", "active": True},
+                {"name": "Bob", "active": False},
+            ],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            result = loader.load_all()
+            assert result["items"].row_count == 1
+            rows = adapter.fetch_all("SELECT name FROM items")
+            assert rows[0]["name"] == "Alice"
+
+    def test_filter_with_json_dot_notation(self, tmp_path):
+        """db_load.filter works with dot-notation on JSON-string values."""
+        sources = [
+            ApiSource(
+                id="items",
+                endpoint="/api/items",
+                db_load=DbLoadConfig(
+                    filter='.meta.type == "admin"',
+                    fields=["name", "meta.type AS role"],
+                ),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [
+                {"name": "Alice", "meta": json.dumps({"type": "admin"})},
+                {"name": "Bob", "meta": json.dumps({"type": "user"})},
+            ],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            result = loader.load_all()
+
+            assert result["items"].row_count == 1
+            rows = adapter.fetch_all("SELECT * FROM items")
+            assert rows[0]["name"] == "Alice"
+            assert rows[0]["role"] == "admin"
+
+    def test_filter_drops_all(self, tmp_path):
+        """When filter matches nothing, no records loaded."""
+        sources = [
+            ApiSource(
+                id="items",
+                endpoint="/api/items",
+                db_load=DbLoadConfig(filter=".score > 999"),
+            ),
+        ]
+        config = _make_config(tmp_path, sources)
+
+        source_dir = get_source_dir(tmp_path / "data", "items")
+        write_parquet(
+            [{"name": "Alice", "score": 10}],
+            source_dir / "2026-01-01.parquet",
+        )
+
+        adapter = _sqlite_adapter()
+        with adapter:
+            loader = DatasetDbLoader(config, adapter)
+            result = loader.load_all()
+            assert result["items"].ops == 0
+            assert result["items"].row_count == 0

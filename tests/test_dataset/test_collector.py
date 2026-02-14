@@ -13,10 +13,12 @@ from anysite.dataset.collector import (
     collect_dataset,
 )
 from anysite.dataset.models import (
+    ApiSource,
     DatasetConfig,
-    DatasetSource,
     LLMStepConfig,
+    LlmSource,
     SourceDependency,
+    UnionSource,
 )
 from anysite.dataset.storage import read_parquet, write_parquet
 
@@ -67,8 +69,8 @@ class TestFilterSources:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="a", endpoint="/api/a"),
-                DatasetSource(id="b", endpoint="/api/b"),
+                ApiSource(id="a", endpoint="/api/a"),
+                ApiSource(id="b", endpoint="/api/b"),
             ],
         )
         ordered = config.topological_sort()
@@ -80,14 +82,14 @@ class TestFilterSources:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="id"),
                     input_key="parent_id",
                 ),
-                DatasetSource(id="unrelated", endpoint="/api/unrelated"),
+                ApiSource(id="unrelated", endpoint="/api/unrelated"),
             ],
         )
         ordered = config.topological_sort()
@@ -105,8 +107,8 @@ class TestProvenance:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn"),
@@ -169,7 +171,7 @@ class TestProvenance:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="items",
                     endpoint="/api/items",
                     from_file="inputs.txt",
@@ -216,8 +218,8 @@ class TestProvenance:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn"),
@@ -258,7 +260,7 @@ class TestDryRunEstimates:
     async def test_independent_shows_1(self, tmp_path):
         config = DatasetConfig(
             name="test",
-            sources=[DatasetSource(id="s1", endpoint="/api/s1")],
+            sources=[ApiSource(id="s1", endpoint="/api/s1")],
             storage={"format": "parquet", "path": str(tmp_path / "data")},
         )
         from anysite.dataset.collector import _build_plan
@@ -276,8 +278,8 @@ class TestDryRunEstimates:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child", endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn", dedupe=True),
                     input_key="urn",
@@ -314,7 +316,7 @@ class TestDryRunEstimates:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="items", endpoint="/api/items",
                     from_file=str(input_file), input_key="name",
                 ),
@@ -339,7 +341,7 @@ class TestCollectDataset:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="profiles",
                     endpoint="/api/test/search",
                     params={"count": 2},
@@ -377,7 +379,7 @@ class TestCollectDataset:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="a", endpoint="/api/a"),
+                ApiSource(id="a", endpoint="/api/a"),
             ],
             storage={"format": "parquet", "path": str(tmp_path / "data")},
         )
@@ -390,7 +392,7 @@ class TestCollectDataset:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="profiles", endpoint="/api/test"),
+                ApiSource(id="profiles", endpoint="/api/test"),
             ],
             storage={"format": "parquet", "path": str(tmp_path / "data")},
         )
@@ -417,7 +419,7 @@ class TestRefreshAlways:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="posts",
                     endpoint="/api/posts",
                     refresh="always",
@@ -455,7 +457,7 @@ class TestRefreshAlways:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="profiles", endpoint="/api/profiles"),
+                ApiSource(id="profiles", endpoint="/api/profiles"),
             ],
             storage={"format": "parquet", "path": str(tmp_path / "data")},
         )
@@ -475,7 +477,7 @@ class TestRefreshAlways:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="posts",
                     endpoint="/api/posts",
                     refresh="always",
@@ -504,8 +506,8 @@ class TestRefreshAlways:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn"),
@@ -561,7 +563,7 @@ class TestRefreshAlways:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="items",
                     endpoint="/api/items",
                     from_file=str(input_file),
@@ -608,8 +610,8 @@ class TestIncrementalDedup:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn"),
@@ -661,8 +663,8 @@ class TestIncrementalDedup:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="parent", endpoint="/api/parent"),
-                DatasetSource(
+                ApiSource(id="parent", endpoint="/api/parent"),
+                ApiSource(
                     id="child",
                     endpoint="/api/child",
                     dependency=SourceDependency(from_source="parent", field="urn"),
@@ -707,7 +709,7 @@ class TestIncrementalDedup:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                ApiSource(
                     id="items",
                     endpoint="/api/items",
                     from_file=str(input_file),
@@ -762,7 +764,7 @@ class TestLLMSourceType:
         )
 
         # Create LLM source
-        source = DatasetSource(
+        source = LlmSource(
             id="profiles_enriched",
             type="llm",
             dependency=SourceDependency(from_source="profiles", field="name"),
@@ -781,7 +783,7 @@ class TestLLMSourceType:
         from anysite.dataset.collector import _collect_llm
 
         # No parent data exists
-        source = DatasetSource(
+        source = LlmSource(
             id="enriched",
             type="llm",
             dependency=SourceDependency(from_source="missing_parent", field="name"),
@@ -798,13 +800,13 @@ class TestLLMSourceType:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(
+                LlmSource(
                     id="enriched",
                     type="llm",
                     dependency=SourceDependency(from_source="profiles", field="name"),
                     llm=[LLMStepConfig(type="enrich", add=["sentiment:positive/negative"])],
                 ),
-                DatasetSource(id="profiles", endpoint="/api/profiles"),
+                ApiSource(id="profiles", endpoint="/api/profiles"),
             ],
             storage={"format": "parquet", "path": str(tmp_path / "data")},
         )
@@ -833,8 +835,8 @@ class TestLLMSourceType:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="profiles", endpoint="/api/profiles"),
-                DatasetSource(
+                ApiSource(id="profiles", endpoint="/api/profiles"),
+                LlmSource(
                     id="enriched",
                     type="llm",
                     dependency=SourceDependency(from_source="profiles", field="name"),
@@ -878,7 +880,7 @@ class TestUnionSourceType:
             search_b_dir / "2026-01-15.parquet",
         )
 
-        source = DatasetSource(
+        source = UnionSource(
             id="combined",
             type="union",
             sources=["search_a", "search_b"],
@@ -912,7 +914,7 @@ class TestUnionSourceType:
             search_b_dir / "2026-01-15.parquet",
         )
 
-        source = DatasetSource(
+        source = UnionSource(
             id="combined",
             type="union",
             sources=["search_a", "search_b"],
@@ -941,7 +943,7 @@ class TestUnionSourceType:
 
         # search_b has no data
 
-        source = DatasetSource(
+        source = UnionSource(
             id="combined",
             type="union",
             sources=["search_a", "search_b"],
@@ -975,7 +977,7 @@ class TestUnionSourceType:
             search_b_dir / "2026-01-15.parquet",
         )
 
-        source = DatasetSource(
+        source = UnionSource(
             id="combined",
             type="union",
             sources=["search_a", "search_b"],
@@ -1044,9 +1046,9 @@ class TestUnionDryRun:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
-                DatasetSource(
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
@@ -1076,10 +1078,10 @@ class TestFilterSourcesWithUnion:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
-                DatasetSource(id="unrelated", endpoint="/api/other"),
-                DatasetSource(
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
+                ApiSource(id="unrelated", endpoint="/api/other"),
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
@@ -1097,14 +1099,14 @@ class TestFilterSourcesWithUnion:
         config = DatasetConfig(
             name="test",
             sources=[
-                DatasetSource(id="search_a", endpoint="/api/search"),
-                DatasetSource(id="search_b", endpoint="/api/search"),
-                DatasetSource(
+                ApiSource(id="search_a", endpoint="/api/search"),
+                ApiSource(id="search_b", endpoint="/api/search"),
+                UnionSource(
                     id="combined",
                     type="union",
                     sources=["search_a", "search_b"],
                 ),
-                DatasetSource(
+                ApiSource(
                     id="profiles",
                     endpoint="/api/profiles",
                     dependency=SourceDependency(from_source="combined", field="urn"),
@@ -1116,3 +1118,146 @@ class TestFilterSourcesWithUnion:
         filtered = _filter_sources(ordered, "profiles", config)
         ids = {s.id for s in filtered}
         assert ids == {"search_a", "search_b", "combined", "profiles"}
+
+
+# ---------------------------------------------------------------------------
+# Source-level filter (before LLM and Parquet)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceFilter:
+    @pytest.mark.asyncio
+    async def test_source_filter_drops_records_before_parquet(self, tmp_path):
+        """source.filter should drop records before Parquet write."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="items",
+                    endpoint="/api/items",
+                    filter=".score > 50",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(
+                return_value=[
+                    {"name": "Alice", "score": 80},
+                    {"name": "Bob", "score": 30},
+                    {"name": "Carol", "score": 60},
+                ]
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, quiet=True)
+
+        # Only 2 of 3 pass the filter
+        assert results["items"] == 2
+        records = read_parquet(tmp_path / "data" / "raw" / "items")
+        assert len(records) == 2
+        names = {r["name"] for r in records}
+        assert names == {"Alice", "Carol"}
+
+    @pytest.mark.asyncio
+    async def test_source_filter_before_llm(self, tmp_path):
+        """source.filter should run before LLM enrichment."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="items",
+                    endpoint="/api/items",
+                    filter=".is_relevant == 1",
+                    llm=[LLMStepConfig(type="enrich", add=["mood:happy/sad"])],
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(
+                return_value=[
+                    {"name": "Alice", "is_relevant": 1},
+                    {"name": "Bob", "is_relevant": 0},
+                ]
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            with patch("anysite.dataset.llm_enrichment.enrich_records") as mock_enrich:
+                mock_enrich.return_value = [
+                    {"name": "Alice", "is_relevant": 1, "mood": "happy"},
+                ]
+                results = await collect_dataset(config, quiet=True)
+
+                # enrich_records should only receive the filtered record
+                mock_enrich.assert_called_once()
+                enriched_input = mock_enrich.call_args[0][0]
+                assert len(enriched_input) == 1
+                assert enriched_input[0]["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_source_filter_none_is_noop(self, tmp_path):
+        """When source.filter is None, all records pass through."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(id="items", endpoint="/api/items"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(
+                return_value=[{"name": "A"}, {"name": "B"}]
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["items"] == 2
+
+    @pytest.mark.asyncio
+    async def test_source_filter_boolean(self, tmp_path):
+        """source.filter supports boolean literals."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="items",
+                    endpoint="/api/items",
+                    filter=".is_author == false",
+                ),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(
+                return_value=[
+                    {"text": "hello", "is_author": True},
+                    {"text": "world", "is_author": False},
+                    {"text": "test", "is_author": True},
+                ]
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["items"] == 1
+        records = read_parquet(tmp_path / "data" / "raw" / "items")
+        assert len(records) == 1
+        assert records[0]["text"] == "world"

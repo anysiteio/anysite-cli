@@ -59,6 +59,41 @@ def _extract_dot_value(record: dict[str, Any], dot_path: str) -> Any:
     return current
 
 
+def _apply_db_load_filter(
+    records: list[dict[str, Any]],
+    filter_expr: str,
+) -> list[dict[str, Any]]:
+    """Apply a db_load.filter expression to records.
+
+    Uses JSON-string-aware dot access via ``_extract_dot_value`` so that
+    filters work on nested fields stored as JSON strings in Parquet.
+    """
+    from anysite.dataset.transformer import parse_filter
+
+    pred = parse_filter(filter_expr)
+    if pred is None:
+        return records
+
+    # Build a JSON-aware wrapper: pre-parse JSON strings in dot-notation fields
+    # so the filter predicate can traverse them.
+    def _json_aware_pred(record: dict[str, Any]) -> bool:
+        # For dot-notation fields in the filter, _get_dot_value in transformer.py
+        # doesn't parse JSON strings. We pre-resolve them by expanding JSON-string
+        # top-level fields into dicts.
+        expanded = {}
+        for k, v in record.items():
+            if isinstance(v, str) and v.startswith("{"):
+                try:
+                    expanded[k] = json.loads(v)
+                except (json.JSONDecodeError, ValueError):
+                    expanded[k] = v
+            else:
+                expanded[k] = v
+        return pred(expanded)
+
+    return [r for r in records if _json_aware_pred(r)]
+
+
 def _table_name_for(source: DatasetSource) -> str:
     """Get the DB table name for a source."""
     if source.db_load and source.db_load.table:
@@ -265,6 +300,12 @@ class DatasetDbLoader:
         if not raw_records:
             return LoadResult(ops=0, row_count=0)
 
+        # Apply db_load.filter to exclude records before loading
+        if source.db_load and source.db_load.filter:
+            raw_records = _apply_db_load_filter(raw_records, source.db_load.filter)
+            if not raw_records:
+                return LoadResult(ops=0, row_count=0)
+
         # Determine parent info for FK linking
         parent_source_id = None
         parent_fk_col = None
@@ -339,6 +380,12 @@ class DatasetDbLoader:
     ) -> LoadResult:
         """Diff-based incremental sync: compare two most recent snapshots, apply delta."""
         result = differ.diff(source.id, diff_key)
+
+        # Apply db_load.filter to added/changed records in diff
+        if source.db_load and source.db_load.filter:
+            result.added = _apply_db_load_filter(result.added, source.db_load.filter)
+            result.changed = _apply_db_load_filter(result.changed, source.db_load.filter)
+
         total = 0
         sync_mode = source.db_load.sync if source.db_load else "full"
 

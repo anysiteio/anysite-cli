@@ -39,6 +39,7 @@ SECTION_ORDER: list[str] = [
     "schedule",
     "notifications",
     "incremental",
+    "validation",
 ]
 
 
@@ -385,6 +386,24 @@ STEP TYPES:
    Types: string, integer, boolean, or slash-separated enum values.
    Ranges like "1-10" generate integer constraints.
 
+   Structured alternative (EnrichFieldSpec) — use objects instead of strings:
+
+    llm:
+      - type: enrich
+        add:
+          - name: sentiment
+            values: [positive, negative, neutral]
+          - name: score
+            type: integer
+            min: 1
+            max: 10
+          - name: language
+            type: string
+          - name: is_hiring
+            type: boolean
+
+   Both string and structured formats can be mixed in the same ``add`` list.
+
 3. SUMMARIZE -- generate concise text summaries
 
     llm:
@@ -484,31 +503,57 @@ llm:
     # transform
     # ------------------------------------------------------------------
     "transform": GuideSection(
-        title="Transforms",
-        description="Per-source record transforms applied to exports (not to Parquet storage)",
+        title="Filtering & Transforms",
+        description="Three-level filtering: source-level, export, and database loading",
         content="""\
-The optional `transform` block on a source applies transformations to records
-BEFORE they are sent to export destinations. Transforms do NOT affect Parquet
-storage -- full records are always stored to preserve dependency resolution.
+The pipeline supports filtering at three independent stages:
 
-FILTER:
-Safe expression parser (no eval). Use `.field` prefix for record fields:
+  Collection -> [source.filter] -> LLM -> Parquet -> [transform.filter] -> Export
+                                                      [db_load.filter]  -> DB
+
+LEVEL 1 - SOURCE FILTER (source.filter):
+Applied AFTER collection, BEFORE LLM enrichment and Parquet write.
+Records that don't match are dropped entirely from the source.
+Use this to avoid wasting LLM tokens on irrelevant records.
+
+    - id: comments
+      endpoint: /api/linkedin/post/comments
+      filter: ".is_commenter_post_author == false"
+      llm:
+        - type: enrich
+          add: ["score:1-10"]
+
+LEVEL 2 - TRANSFORM FILTER (transform.filter):
+Applied AFTER Parquet write, BEFORE exports only.
+Full records are preserved in Parquet for dependency resolution.
 
     transform:
-      filter: ".employee_count > 10"
+      filter: ".score > 5"
+
+LEVEL 3 - DB LOAD FILTER (db_load.filter):
+Applied when loading records into a relational database.
+Only affects which records enter the DB; Parquet is unchanged.
+
+    db_load:
+      filter: ".active == true"
+      fields: [name, score]
+
+FILTER SYNTAX:
+Safe expression parser (no eval). Use `.field` prefix for record fields.
 
 Operators: ==, !=, >, <, >=, <=
 Combinators: and, or
-String comparison: .status == "active"
-Negation: .name != ""
+Types: numbers, strings, booleans (true/false), null
 
-    transform:
-      filter: ".follower_count > 1000 and .status == \"active\""
+    filter: ".follower_count > 1000 and .status == \"active\""
+    filter: ".is_author == false"
+    filter: ".name != null"
+    filter: ".score > 5 or .category == \"priority\""
 
-    transform:
-      filter: ".score > 5 or .category == \"priority\""
+Boolean comparison also works with 0/1 integer values:
+    filter: ".is_author == false"    # matches both False and 0
 
-FIELDS:
+TRANSFORM - FIELDS:
 Select and rename fields. Supports dot-notation with aliases:
 
     transform:
@@ -519,48 +564,58 @@ Select and rename fields. Supports dot-notation with aliases:
         - "company.name AS company"
         - follower_count
 
-ADD_COLUMNS:
+TRANSFORM - ADD_COLUMNS:
 Inject static values into every exported record:
 
     transform:
       add_columns:
         batch: "q1-2026"
         source: "linkedin"
-        pipeline_version: "2.0"
 
-COMBINING ALL THREE:
-All transform options can be used together. Order of operations:
-filter -> fields -> add_columns
+COMBINING ALL THREE LEVELS:
 
-    transform:
-      filter: ".employee_count > 50 and .industry != \"\""
-      fields:
-        - name
-        - "universalName AS slug"
-        - employee_count
-        - industry
-      add_columns:
-        collected_by: "anysite"
-        batch: "2026-02"
+    - id: comments_analyzed
+      type: llm
+      dependency:
+        from_source: comments
+        field: urn.value
+      filter: ".is_commenter_post_author == false"   # Level 1
+      llm:
+        - type: enrich
+          add: ["score:1-10", "is_llm:boolean"]
+      transform:
+        filter: ".score > 5"                          # Level 2
+        fields: [text, author, score]
+      db_load:
+        filter: ".is_llm == true"                     # Level 3
+        fields: [text, author, score, is_llm]
 """,
         examples=[
             """\
-# Filter high-engagement profiles
-transform:
-  filter: ".follower_count > 500"
-  fields: [name, headline, follower_count]""",
+# Source filter: skip author's own comments before LLM
+- id: analyzed
+  type: llm
+  dependency:
+    from_source: comments
+    field: urn.value
+  filter: ".is_commenter_post_author == false"
+  llm:
+    - type: enrich
+      add: ["score:1-10"]""",
             """\
-# Full transform pipeline
-transform:
-  filter: ".employee_count > 100"
-  fields:
-    - name
-    - "universalName AS slug"
-    - "urn.value AS company_id"
-    - employee_count
-  add_columns:
-    source: linkedin
-    batch: "2026-q1"
+# Three-level filtering
+- id: profiles
+  endpoint: /api/linkedin/search/users
+  filter: ".follower_count > 100"             # drop low-engagement before LLM
+  llm:
+    - type: classify
+      categories: ["candidate", "recruiter", "other"]
+  transform:
+    filter: ".category == \"candidate\""       # export only candidates
+    fields: [name, headline, category]
+  db_load:
+    filter: ".category_confidence > 0.8"       # only high-confidence to DB
+    fields: [name, headline, category]
 """,
         ],
     ),
@@ -673,6 +728,15 @@ Exclude specific fields (default: _input_value, _parent_source):
         - _input_value
         - _parent_source
         - raw_html
+
+FILTER:
+Filter records before loading into the database. Uses the same safe expression
+syntax as source.filter and transform.filter. Parquet data is unchanged.
+
+    db_load:
+      filter: ".active == true and .score > 5"
+      table: high_score
+      fields: [name, score]
 
 DIFF-BASED INCREMENTAL SYNC:
 When `key` is set and the table already has data from 2+ snapshots, the
@@ -970,6 +1034,57 @@ anysite dataset collect dataset.yaml""",
 """,
         ],
     ),
+    # ------------------------------------------------------------------
+    # validation
+    # ------------------------------------------------------------------
+    "validation": GuideSection(
+        title="Validation",
+        description="Fast config validation without running collection",
+        content="""\
+The `anysite dataset validate` command checks a dataset YAML config for
+errors without making any API calls or running collection. It finishes in
+under 0.1 seconds and is useful for CI pipelines and pre-commit checks.
+
+USAGE:
+
+    anysite dataset validate dataset.yaml
+    anysite dataset validate dataset.yaml --json
+
+WHAT IS CHECKED:
+  - YAML syntax and Pydantic model validation
+  - Discriminated union source types (api, llm, union)
+  - Dependency graph (topological sort, missing references, cycles)
+  - All filter expressions (source.filter, transform.filter, db_load.filter)
+  - LLM add specs (both string and structured EnrichFieldSpec formats)
+
+FILTER DIAGNOSTICS:
+The validator detects common filter typos and suggests corrections:
+  - `=` instead of `==` ("did you mean '=='?")
+  - `&&` instead of `and` ("did you mean 'and'?")
+  - `||` instead of `or` ("did you mean 'or'?")
+  - `!` instead of `!=` ("did you mean '!='?")
+
+JSON OUTPUT:
+With `--json`, returns a structured result for machine consumption:
+
+    {
+      "ok": true,
+      "result": {
+        "valid": true,
+        "errors": [],
+        "warnings": ["sources[0]: parallel=20 is high, consider 3-5"]
+      }
+    }
+""",
+        examples=[
+            """\
+# Quick validation
+anysite dataset validate dataset.yaml
+
+# JSON output for CI
+anysite dataset validate dataset.yaml --json""",
+        ],
+    ),
 }
 
 
@@ -1147,5 +1262,59 @@ sources:
 storage:
   format: parquet
   path: ./data/content-analysis/
+  partition_by: [source_id, collected_date]""",
+    # ------------------------------------------------------------------
+    "filter_levels": """\
+name: comment-analysis
+description: Three-level filtering — source, export, and DB
+sources:
+  - id: posts
+    endpoint: /api/linkedin/user/posts
+    from_file: authors.txt
+    input_key: user
+    parallel: 3
+
+  - id: comments
+    endpoint: /api/linkedin/post/comments
+    dependency:
+      from_source: posts
+      field: urn.value
+    input_key: urn
+    parallel: 5
+
+  - id: comments_analyzed
+    type: llm
+    dependency:
+      from_source: comments
+      field: urn.value
+    filter: ".is_commenter_post_author == false"     # Level 1: skip author replies
+    llm:
+      - type: enrich
+        add:
+          - "llm_score:1-10"
+          - "is_llm:boolean"
+          - "explanation:string"
+        fields: [text, author]
+        temperature: 0.0
+    transform:
+      filter: ".llm_score > 5"                       # Level 2: export high-score only
+      fields: [text, author, llm_score, is_llm, explanation]
+    export:
+      - type: file
+        format: csv
+        path: "./output/analyzed_comments_{{date}}.csv"
+    db_load:
+      filter: ".is_llm == true"                      # Level 3: only flagged to DB
+      table: flagged_comments
+      fields:
+        - text
+        - author
+        - llm_score
+        - is_llm
+        - explanation
+
+storage:
+  format: parquet
+  path: ./data/comment-analysis/
   partition_by: [source_id, collected_date]""",
 }

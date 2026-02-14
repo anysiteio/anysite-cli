@@ -25,8 +25,9 @@ sources:
     rate_limit: "10/s"         # Rate limiting
     on_error: skip             # stop or skip
     refresh: always            # auto (default) or always — re-collect every run
-    transform:                 # Post-collection transform (for exports only)
-      filter: '.count > 10'   # Safe filter expression
+    filter: '.count > 10'     # Source filter (before LLM + Parquet write)
+    transform:                 # Export filter (after Parquet write, for exports only)
+      filter: '.status == "active"'
       fields: [name, url]     # Field selection with aliases
       add_columns:             # Static columns to inject
         batch: "q1-2026"
@@ -54,6 +55,7 @@ sources:
         output_column: pitch   # Default: "text"
         temperature: 0.7       # Per-step overrides
     db_load:                   # Database loading config
+      filter: '.active == true'  # DB load filter (only matching records to DB)
       table: custom_name       # Override table name
       key: urn.value           # Unique key for diff-based incremental sync
       sync: full               # full (INSERT/DELETE/UPDATE) or append (no DELETE)
@@ -192,9 +194,23 @@ When Parquet stores nested objects as JSON strings, dot-notation traverses them:
 
 ---
 
+## Validation
+
+Validate dataset config before collecting. Catches structural errors, missing dependencies, invalid filters, and bad LLM specs.
+
+```bash
+anysite dataset validate dataset.yaml                    # Validate config
+anysite dataset validate dataset.yaml --json             # Machine-readable output
+```
+
+---
+
 ## Collection Commands
 
 ```bash
+# Validate config first (recommended)
+anysite dataset validate dataset.yaml
+
 # Preview collection plan with estimated request counts
 anysite dataset collect dataset.yaml --dry-run
 
@@ -421,9 +437,54 @@ anysite db query <name> --file report.sql --format csv --output report.csv
 
 ---
 
-## Per-Source Transform
+## Three-Level Filtering
 
-Transforms apply to export destinations only. Parquet always stores full records (needed for dependency resolution).
+The pipeline supports filtering at three independent stages:
+
+```
+Collection → [source.filter] → LLM → Parquet → [transform.filter] → Export
+                                                  [db_load.filter]  → DB
+```
+
+| Level | Config | When | Effect |
+|-------|--------|------|--------|
+| 1 | `source.filter` | After collection, before LLM + Parquet | Drops records entirely |
+| 2 | `transform.filter` | After Parquet, before exports | Parquet keeps all |
+| 3 | `db_load.filter` | Before DB loading | Parquet keeps all |
+
+```yaml
+- id: analyzed
+  type: llm
+  dependency: { from_source: comments, field: urn.value }
+  filter: '.is_commenter_post_author == false'   # Level 1
+  llm:
+    - type: enrich
+      add: ["score:1-10"]
+  transform:
+    filter: '.score > 5'                          # Level 2
+    fields: [text, author, score]
+  db_load:
+    filter: '.score > 8'                          # Level 3
+    fields: [text, author, score]
+```
+
+### Filter Syntax
+Safe expression parser (no `eval()`). Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`. Connectors: `and`, `or`. Values: strings (`"..."`), numbers, booleans (`true`/`false`), `null`.
+
+```
+.field > 10
+.status == "active"
+.active == true
+.hidden == false
+.location != ""
+.name != null
+.count > 5 and .count < 100
+.status == "active" or .status == "pending"
+```
+
+### Per-Source Transform
+
+`transform` block applies to export destinations only. Parquet always stores full records.
 
 ```yaml
 transform:
@@ -436,18 +497,6 @@ transform:
   add_columns:
     batch: "q1-2026"
     source: "linkedin"
-```
-
-### Filter Syntax
-Safe expression parser (no `eval()`). Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`. Connectors: `and`, `or`. Values: strings (`"..."`), numbers, `null`.
-
-```
-.field > 10
-.status == "active"
-.location != ""
-.name != null
-.count > 5 and .count < 100
-.status == "active" or .status == "pending"
 ```
 
 ---

@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 OPENAPI_URL = "https://api.anysite.io/openapi.json"
-CACHE_VERSION = "0.0.1"
+CACHE_VERSION = "0.0.2"
 
 
 def get_cache_path() -> Path:
@@ -145,7 +145,13 @@ def _extract_properties(
 
 
 def _extract_input(spec: dict[str, Any], method_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Extract input parameters from request body schema."""
+    """Extract input parameters from request body schema.
+
+    Captures description, examples, and default from the **raw** field schema
+    before resolving ``anyOf``/``oneOf`` (which strips parent-level metadata).
+    For array params, resolves item types to show ``array[string]`` or
+    ``array[object{type,value}]`` instead of bare ``array``.
+    """
     request_body = method_data.get("requestBody", {})
     content = request_body.get("content", {})
     json_content = content.get("application/json", {})
@@ -160,13 +166,52 @@ def _extract_input(spec: dict[str, Any], method_data: dict[str, Any]) -> dict[st
 
     result: dict[str, dict[str, Any]] = {}
     for field_name, field_schema in properties.items():
+        # Capture metadata from RAW schema before anyOf/oneOf resolution
+        raw_desc = field_schema.get("description", "")
+        raw_examples = field_schema.get("examples")
+        raw_default = field_schema.get("default")
+
         resolved_field = _resolve_schema(spec, field_schema)
-        result[field_name] = {
-            "type": _simplify_type(resolved_field),
+        field_type = _simplify_type(resolved_field)
+
+        # Prefer raw (parent-level) description, fall back to resolved
+        description = raw_desc or resolved_field.get("description", "")
+
+        # Enrich array types with item info
+        if field_type == "array":
+            field_type = _describe_array_type(spec, resolved_field)
+        elif field_schema.get("type") == "array":
+            # Raw schema is array but resolved (via anyOf) lost that info
+            field_type = _describe_array_type(spec, field_schema)
+
+        entry: dict[str, Any] = {
+            "type": field_type,
             "required": field_name in required_fields,
-            "description": resolved_field.get("description", ""),
+            "description": description,
         }
+        if raw_examples is not None:
+            entry["examples"] = raw_examples
+        if raw_default is not None:
+            entry["default"] = raw_default
+
+        result[field_name] = entry
     return result
+
+
+def _describe_array_type(spec: dict[str, Any], schema: dict[str, Any]) -> str:
+    """Return a descriptive type string for an array schema.
+
+    Examples: ``array[string]``, ``array[object{type,value}]``.
+    """
+    items = schema.get("items")
+    if not items:
+        return "array"
+    resolved_items = _resolve_schema(spec, items)
+    item_type = _simplify_type(resolved_items)
+    if item_type == "object" and "properties" in resolved_items:
+        prop_names = list(resolved_items["properties"].keys())
+        return f"array[object{{{','.join(prop_names)}}}]"
+    return f"array[{item_type}]"
 
 
 def extract_endpoint_info(
@@ -375,7 +420,7 @@ def convert_value(value: str, type_hint: str) -> str | int | bool | float | list
         return value.lower() in ("true", "1", "yes")
     if type_hint == "number":
         return float(value)
-    if type_hint == "array":
+    if type_hint == "array" or type_hint.startswith("array["):
         # Parse JSON array
         try:
             parsed = json.loads(value)

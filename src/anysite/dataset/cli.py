@@ -315,7 +315,7 @@ def status(
         source_statuses.append(
             {
                 "id": src.id,
-                "endpoint": src.endpoint,
+                "endpoint": getattr(src, "endpoint", None),
                 "last_collected": info.get("last_collected", "-") if info else "-",
                 "record_count": info.get("record_count", 0) if info else 0,
                 "files": len(files),
@@ -1106,6 +1106,93 @@ def reset_cursor(
     from anysite.cli.json_output import print_hints
 
     print_hints(hints)
+
+
+@app.command("validate")
+def validate(
+    config_path: Annotated[
+        Path,
+        typer.Argument(help="Path to dataset.yaml"),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as machine-readable JSON"),
+    ] = False,
+) -> None:
+    """Validate dataset config without running collection.
+
+    Fast validation (<0.1s, no API calls). Checks YAML syntax, Pydantic models,
+    dependency graph, filter expressions, and LLM add specs.
+    """
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    config = _load_config(config_path, json_output=json_output)
+
+    from anysite.dataset.validator import validate_dataset_config
+
+    result = validate_dataset_config(config)
+
+    # Build execution order for output
+    try:
+        ordered = config.topological_sort()
+        execution_order = [s.id for s in ordered]
+    except Exception:
+        execution_order = [s.id for s in config.sources]
+
+    if json_output:
+        from anysite.cli.json_output import json_error, json_response
+
+        if not result.valid:
+            json_error(
+                "VALIDATION_ERROR",
+                f"{len(result.errors)} validation error(s)",
+                suggestions=[f"{e.location}: {e.message}" for e in result.errors],
+            )
+            raise typer.Exit(2)
+
+        json_response(
+            {
+                "valid": True,
+                "name": config.name,
+                "source_count": len(config.sources),
+                "execution_order": execution_order,
+                "warnings": result.warnings,
+            },
+            hints=[
+                ("Collect data", f"anysite dataset collect {config_path}"),
+                ("Preview plan", f"anysite dataset collect {config_path} --dry-run"),
+            ],
+            command="anysite dataset validate",
+        )
+        return
+
+    console = Console()
+
+    if result.valid:
+        console.print("[green]\u2713[/green] YAML syntax valid")
+        console.print(
+            f"[green]\u2713[/green] {len(config.sources)} sources: "
+            f"{' \u2192 '.join(execution_order)}"
+        )
+        console.print("[green]\u2713[/green] Dependency graph valid")
+        console.print("[green]\u2713[/green] All filters valid")
+
+        if result.warnings:
+            for w in result.warnings:
+                console.print(f"[yellow]![/yellow] {w}")
+
+        console.print("\n[bold green]Config is valid.[/bold green]")
+    else:
+        for err in result.errors:
+            console.print(f"[red]\u2717[/red] {err.location}: {err.message}")
+
+        if result.warnings:
+            for w in result.warnings:
+                console.print(f"[yellow]![/yellow] {w}")
+
+        raise typer.Exit(1)
 
 
 @app.command("guide")

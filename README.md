@@ -115,11 +115,18 @@ Discover API endpoints:
 anysite describe                          # list all 118+ endpoints
 anysite describe --search "company"       # search by keyword
 anysite describe /api/linkedin/company    # input params + output fields with nested expansion
+anysite describe /api/linkedin/company --json  # machine-readable with examples + defaults
 ```
 
-Nested fields are expanded with dot-notation:
+Input parameters include types, descriptions, examples, and defaults. Output fields expand nested structures with dot-notation:
 
 ```
+Input parameters:
+  * urn                            string      User URN, only fsd_profile urn type is allowed
+                                               example: "urn:li:fsd_profile:ACoAABXy1234"
+    count                          integer     Number of posts to return
+                                               default: 20
+
 Output fields (15):
     name                           string
     urn                            object
@@ -319,7 +326,7 @@ Input file formats: plain text (one value per line), JSONL, CSV.
 
 ## Dataset Pipelines
 
-Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database. Includes per-source transforms, file/webhook exports, run history, scheduling, and webhook notifications.
+Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database. Includes three-level filtering (source, export, DB load), per-source transforms, file/webhook exports, run history, scheduling, and webhook notifications.
 
 ### Create a dataset
 
@@ -359,8 +366,9 @@ sources:
     endpoint: /api/linkedin/company
     from_file: companies.txt
     input_key: company
-    transform:                          # Post-collection transform (for exports)
-      filter: '.employee_count > 10'
+    filter: '.employee_count > 10'      # Source filter (before LLM + Parquet)
+    transform:                          # Export filter (after Parquet write)
+      filter: '.industry != ""'
       fields: [name, url, employee_count]
       add_columns:
         batch: "q1-2026"
@@ -369,6 +377,7 @@ sources:
         path: ./output/companies-{{date}}.csv
         format: csv
     db_load:
+      filter: '.employee_count > 50'       # DB load filter (only large companies to DB)
       key: _input_value                    # Unique key for incremental sync
       sync: full                           # full (default) or append (no DELETE)
       fields: [name, url, employee_count]
@@ -407,6 +416,9 @@ notifications:
 ### Collect, query, and load
 
 ```bash
+# Validate config (catches errors before collecting)
+anysite dataset validate dataset.yaml
+
 # Preview collection plan
 anysite dataset collect dataset.yaml --dry-run
 

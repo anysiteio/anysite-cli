@@ -390,16 +390,35 @@ async def _run_generate_step(
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _parse_add_specs(specs: list[str]) -> dict[str, str]:
-    """Parse add field specs like 'sentiment:positive/negative/neutral'."""
+def _parse_add_specs(specs: list[Any]) -> dict[str, str]:
+    """Parse add field specs.
+
+    Accepts both string format (``'sentiment:positive/negative/neutral'``)
+    and structured ``EnrichFieldSpec`` objects.
+    """
+    from anysite.dataset.models import EnrichFieldSpec
+
     result: dict[str, str] = {}
     for spec in specs:
-        if ":" not in spec:
-            raise DatasetError(
-                f"Invalid LLM enrich spec '{spec}', expected 'name:type_or_values'"
-            )
-        name, _, type_spec = spec.partition(":")
-        result[name.strip()] = type_spec.strip()
+        if isinstance(spec, EnrichFieldSpec):
+            # Convert structured spec to string format for downstream compat
+            if spec.values:
+                result[spec.name] = "/".join(spec.values)
+            elif spec.min is not None and spec.max is not None:
+                result[spec.name] = f"{spec.min}-{spec.max}"
+            elif spec.type:
+                result[spec.name] = spec.type
+            else:
+                result[spec.name] = "string"
+        elif isinstance(spec, str):
+            if ":" not in spec:
+                raise DatasetError(
+                    f"Invalid LLM enrich spec '{spec}', expected 'name:type_or_values'"
+                )
+            name, _, type_spec = spec.partition(":")
+            result[name.strip()] = type_spec.strip()
+        else:
+            raise DatasetError(f"Invalid LLM enrich spec type: {type(spec).__name__}")
     return result
 
 
@@ -415,8 +434,15 @@ def _build_schema_from_specs(
             properties[name] = {"type": "string", "enum": options}
         elif spec == "string":
             properties[name] = {"type": "string"}
-        elif spec == "integer" or "-" in spec:
+        elif spec == "integer":
             properties[name] = {"type": "integer"}
+        elif "-" in spec:
+            parts = spec.split("-")
+            try:
+                min_val, max_val = int(parts[0]), int(parts[1])
+                properties[name] = {"type": "integer", "minimum": min_val, "maximum": max_val}
+            except (ValueError, IndexError):
+                properties[name] = {"type": "string"}
         elif spec == "number":
             properties[name] = {"type": "number"}
         elif spec == "boolean":

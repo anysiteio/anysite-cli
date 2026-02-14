@@ -1,7 +1,11 @@
 """Record transformer — filter, field selection, and column injection.
 
-Applies per-source transforms to collected records before Parquet storage.
+Applies per-source transforms to collected records.
 The filter parser is intentionally safe: no ``eval()``, only tokenize → parse.
+
+The ``parse_filter`` function is the public API for building filter predicates.
+It is used by the collector (source-level filter), the db_loader (db_load filter),
+and internally by ``RecordTransformer`` (export filter).
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ class RecordTransformer:
 
     def __init__(self, config: TransformConfig) -> None:
         self.config = config
-        self._filter_fn = _parse_filter(config.filter) if config.filter else None
+        self._filter_fn = parse_filter(config.filter) if config.filter else None
 
     def apply(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = records
@@ -54,6 +58,7 @@ _TOKEN_RE = re.compile(
         (?P<number>-?\d+(?:\.\d+)?)            |  # number
         (?P<op>==|!=|>=|<=|>|<)                |  # comparison
         (?P<logic>and|or)                      |  # logical
+        (?P<bool>true|false)                   |  # boolean literal
         (?P<null>null|none|None)                  # null literal
     )\s*
     """,
@@ -68,8 +73,20 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
     while pos < len(expr):
         m = _TOKEN_RE.match(expr, pos)
         if not m:
-            raise FilterParseError(f"Unexpected character at position {pos}: {expr[pos:]!r}")
-        for name in ("field", "string", "number", "op", "logic", "null"):
+            char = expr[pos]
+            hint = ""
+            if char == "=" and (pos + 1 >= len(expr) or expr[pos + 1] != "="):
+                hint = ", did you mean '=='?"
+            elif expr[pos : pos + 2] == "&&":
+                hint = ", did you mean 'and'?"
+            elif expr[pos : pos + 2] == "||":
+                hint = ", did you mean 'or'?"
+            elif char == "!" and (pos + 1 >= len(expr) or expr[pos + 1] != "="):
+                hint = ", did you mean '!='?"
+            raise FilterParseError(
+                f"Unexpected character '{char}' at position {pos} in {expr!r}{hint}"
+            )
+        for name in ("field", "string", "number", "op", "logic", "bool", "null"):
             val = m.group(name)
             if val is not None:
                 tokens.append((name, val))
@@ -78,14 +95,20 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
     return tokens
 
 
-def _parse_filter(expr: str) -> Any:
+def parse_filter(expr: str) -> Any:
     """Parse a filter expression into a callable predicate.
 
-    Supported syntax:
+    Supported syntax::
+
         .field > 10
         .name != ""
         .status == "active" and .count > 0
         .field != null
+        .active == true
+        .hidden == false
+
+    This is the public API used by the collector (source-level filter),
+    the db_loader (db_load filter), and ``RecordTransformer`` (export filter).
     """
     if not expr or not expr.strip():
         return None
@@ -119,6 +142,8 @@ def _parse_filter(expr: str) -> Any:
             value: Any = tok_val[1:-1]  # strip quotes
         elif tok_type == "number":
             value = float(tok_val) if "." in tok_val else int(tok_val)
+        elif tok_type == "bool":
+            value = tok_val == "true"
         elif tok_type == "null":
             value = None
         else:
@@ -146,6 +171,13 @@ def _parse_filter(expr: str) -> Any:
             return False
         if actual is None:
             return False
+        # Coerce booleans: allow comparing True/False with bool values,
+        # and also handle 0/1 integers matching false/true
+        if isinstance(val, bool):
+            if isinstance(actual, bool):
+                pass  # direct comparison works
+            elif isinstance(actual, int):
+                actual = bool(actual)
         try:
             if op == "==":
                 return actual == val
@@ -189,6 +221,21 @@ def _get_dot_value(record: dict[str, Any], path: str) -> Any:
         else:
             return None
     return current
+
+
+def validate_filter(expr: str) -> list[str]:
+    """Validate a filter expression without raising.
+
+    Returns a list of error messages (empty list means valid).
+    Used by the ``validate`` command for fast, non-raising config checks.
+    """
+    if not expr or not expr.strip():
+        return []
+    try:
+        parse_filter(expr)
+        return []
+    except FilterParseError as e:
+        return [str(e)]
 
 
 def _select_fields(record: dict[str, Any], fields: list[str]) -> dict[str, Any]:
