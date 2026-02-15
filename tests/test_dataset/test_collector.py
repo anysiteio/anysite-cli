@@ -385,7 +385,10 @@ class TestCollectDataset:
         )
 
         results = await collect_dataset(config, dry_run=True, quiet=True)
-        assert results == {}
+        assert "_plan" in results
+        assert len(results["_plan"]) == 1
+        assert results["_plan"][0]["source"] == "a"
+        assert results["_plan"][0]["kind"] == "independent"
 
     @pytest.mark.asyncio
     async def test_incremental_skip(self, tmp_path):

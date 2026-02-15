@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Discriminator,
     Field,
     PrivateAttr,
@@ -206,6 +207,8 @@ class LLMStepConfig(BaseModel):
 
 class _SourceBase(BaseModel):
     """Fields shared by all source types (api, llm, union)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str = Field(description="Unique source identifier")
     filter: str | None = Field(

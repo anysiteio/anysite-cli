@@ -1,7 +1,7 @@
 """Dataset configuration validator.
 
 Fast validation (<0.1s, no API calls) for dataset YAML configs.
-Checks dependency graph, filter expressions, and LLM add specs.
+Checks dependency graph, filter expressions, LLM add specs, and schema-aware checks.
 """
 
 from __future__ import annotations
@@ -33,7 +33,11 @@ class ValidationResult:
         return len(self.errors) == 0
 
 
-def validate_dataset_config(config: DatasetConfig) -> ValidationResult:
+def validate_dataset_config(
+    config: DatasetConfig,
+    *,
+    schema_cache: dict[str, Any] | None = None,
+) -> ValidationResult:
     """Validate a dataset config deeply.
 
     Checks:
@@ -41,6 +45,12 @@ def validate_dataset_config(config: DatasetConfig) -> ValidationResult:
     2. All filter expressions (source.filter, transform.filter, db_load.filter)
     3. LLM add specs
     4. Common issues (warnings)
+    5. Schema-aware checks (if schema cache available)
+
+    Args:
+        config: Dataset configuration to validate.
+        schema_cache: Pre-loaded schema cache dict. If not provided, loaded from disk.
+            If None (not found), schema-aware checks are silently skipped.
     """
     result = ValidationResult()
 
@@ -90,8 +100,36 @@ def validate_dataset_config(config: DatasetConfig) -> ValidationResult:
                         result,
                     )
 
-        # 4. Warnings
+        # 4. Param checks (ApiSource only)
         if isinstance(source, ApiSource):
+            # input_key duplicated in params — static value will override dynamic
+            if source.input_key and source.input_key in source.params:
+                result.errors.append(
+                    ValidationError(
+                        location=f"sources[{i}].params.{source.input_key}",
+                        message=(
+                            f"param '{source.input_key}' conflicts with input_key — "
+                            f"remove it from params, the value from "
+                            f"dependency.field or from_file is passed via input_key "
+                            f"automatically"
+                        ),
+                    )
+                )
+
+            # Jinja-like {{ }} templates in params — not supported
+            for param_name, param_val in source.params.items():
+                if isinstance(param_val, str) and "{{" in param_val and "}}" in param_val:
+                    result.errors.append(
+                        ValidationError(
+                            location=f"sources[{i}].params.{param_name}",
+                            message=(
+                                f"Jinja-style template '{param_val}' is not supported. "
+                                f"Use dependency.field + input_key for dynamic values"
+                            ),
+                        )
+                    )
+
+            # Warnings
             if source.parallel > 10:
                 result.warnings.append(
                     f"sources[{i}]: parallel={source.parallel} is high, consider 3-5"
@@ -104,7 +142,142 @@ def validate_dataset_config(config: DatasetConfig) -> ValidationResult:
                         f"not found (may be relative to config dir)"
                     )
 
+    # 5. Schema-aware checks
+    if schema_cache is None:
+        from anysite.api.schemas import load_cache
+
+        schema_cache = load_cache()
+
+    if schema_cache is not None and schema_cache.get("endpoints"):
+        _validate_schema_aware(config, result, schema_cache)
+
     return result
+
+
+def _validate_schema_aware(
+    config: DatasetConfig,
+    result: ValidationResult,
+    schema_cache: dict[str, Any],
+) -> None:
+    """Run schema-aware validation using the cached OpenAPI spec.
+
+    Checks endpoints, required params, input_key, and dependency.field paths.
+    Only applies to ApiSource — LlmSource/UnionSource are skipped.
+    """
+    endpoints = schema_cache.get("endpoints", {})
+    source_map = {s.id: s for s in config.sources}
+
+    for i, source in enumerate(config.sources):
+        if not isinstance(source, ApiSource):
+            continue
+
+        # --- Check 1: endpoint exists ---
+        endpoint_info = endpoints.get(source.endpoint)
+        if endpoint_info is None:
+            similar = _find_similar(source.endpoint, list(endpoints.keys()))
+            msg = f"Endpoint '{source.endpoint}' not found in schema cache"
+            if similar:
+                msg += f". Similar: {', '.join(similar)}"
+            else:
+                msg += ". Run 'anysite schema update' to refresh"
+            result.errors.append(
+                ValidationError(location=f"sources[{i}].endpoint", message=msg)
+            )
+            continue  # Can't check params/fields without endpoint info
+
+        input_params = endpoint_info.get("input", {})
+
+        # --- Check 2: required params provided ---
+        covered_params = set(source.params.keys())
+        if source.input_key:
+            covered_params.add(source.input_key)
+
+        for param_name, param_info in input_params.items():
+            if not param_info.get("required"):
+                continue
+            if param_name in covered_params:
+                continue
+            if param_info.get("default") is not None:
+                continue
+            desc = param_info.get("description", "")
+            examples = param_info.get("examples", [])
+            example_str = f", example: '{examples[0]}'" if examples else ""
+            result.errors.append(
+                ValidationError(
+                    location=f"sources[{i}].params",
+                    message=(
+                        f"Missing required param '{param_name}' for "
+                        f"{source.endpoint} ({desc}{example_str})"
+                    ),
+                )
+            )
+
+        # --- Check 3: input_key valid ---
+        if source.input_key and source.input_key not in input_params:
+            available = list(input_params)
+            result.errors.append(
+                ValidationError(
+                    location=f"sources[{i}].input_key",
+                    message=(
+                        f"input_key '{source.input_key}' is not a valid param for "
+                        f"{source.endpoint}. Available: {', '.join(available)}"
+                    ),
+                )
+            )
+
+        # --- Check 4: dependency.field exists in parent output ---
+        if source.dependency and source.dependency.field:
+            parent_id = source.dependency.from_source
+            parent = source_map.get(parent_id)
+            if parent and isinstance(parent, ApiSource):
+                parent_info = endpoints.get(parent.endpoint)
+                if parent_info:
+                    parent_output = parent_info.get("output", {})
+                    dep_field = source.dependency.field
+                    if dep_field not in parent_output:
+                        similar = _find_similar(dep_field, list(parent_output.keys()))
+                        msg = (
+                            f"dependency.field '{dep_field}' not found in "
+                            f"{parent.endpoint} output"
+                        )
+                        if similar:
+                            msg += f". Similar: {', '.join(similar)}"
+                        result.errors.append(
+                            ValidationError(
+                                location=f"sources[{i}].dependency.field",
+                                message=msg,
+                            )
+                        )
+
+
+def _find_similar(target: str, candidates: list[str], max_results: int = 3) -> list[str]:
+    """Find similar strings by prefix length, substring, or shared segments."""
+    target_lower = target.lower()
+    scored: list[tuple[float, str]] = []
+    for c in candidates:
+        c_lower = c.lower()
+        if c_lower.startswith(target_lower) or target_lower.startswith(c_lower):
+            scored.append((0, c))  # exact prefix
+        elif target_lower in c_lower or c_lower in target_lower:
+            scored.append((1, c))  # substring
+        else:
+            # Common prefix ratio — catches typos like "usr" vs "user"
+            common = 0
+            for a, b in zip(target_lower, c_lower, strict=False):
+                if a != b:
+                    break
+                common += 1
+            ratio = common / max(len(target_lower), len(c_lower))
+            if ratio >= 0.7:
+                scored.append((1.5 - ratio, c))  # higher ratio → lower score
+            else:
+                # Shared path segments
+                target_parts = set(target_lower.strip("/").split("/"))
+                c_parts = set(c_lower.strip("/").split("/"))
+                if len(target_parts & c_parts) >= 2:
+                    scored.append((2, c))
+    scored.sort(key=lambda x: x[0])
+    return [s[1] for s in scored[:max_results]]
 
 
 def _validate_add_specs(

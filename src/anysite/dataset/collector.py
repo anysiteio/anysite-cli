@@ -45,19 +45,21 @@ class CollectionPlan:
         estimated_requests: int | None = None,
         refresh: str = "auto",
         llm_steps: int = 0,
+        mapping: dict[str, Any] | None = None,
     ) -> None:
-        self.steps.append(
-            {
-                "source": source_id,
-                "endpoint": endpoint,
-                "kind": kind,
-                "params": params or {},
-                "dependency": dependency,
-                "estimated_requests": estimated_requests,
-                "refresh": refresh,
-                "llm_steps": llm_steps,
-            }
-        )
+        step: dict[str, Any] = {
+            "source": source_id,
+            "endpoint": endpoint,
+            "kind": kind,
+            "params": params or {},
+            "dependency": dependency,
+            "estimated_requests": estimated_requests,
+            "refresh": refresh,
+            "llm_steps": llm_steps,
+        }
+        if mapping:
+            step["mapping"] = mapping
+        self.steps.append(step)
 
 
 async def collect_dataset(
@@ -106,7 +108,7 @@ async def collect_dataset(
             today,
             config_dir=config_dir,
         )
-        return _print_plan(plan)
+        return {"_plan": plan.steps}
 
     # Record run start in history
     run_id: int | None = None
@@ -748,6 +750,13 @@ def _build_plan(
             )
         elif isinstance(source, ApiSource) and source.from_file is not None:
             est = _count_file_inputs(source, config_dir)
+            file_mapping = None
+            if source.input_key:
+                file_mapping = {
+                    "from_field": source.file_field or "(line)",
+                    "to_param": source.input_key,
+                    "from_source": source.from_file,
+                }
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
@@ -756,6 +765,7 @@ def _build_plan(
                 estimated_requests=est,
                 refresh=source.refresh,
                 llm_steps=llm_steps,
+                mapping=file_mapping,
             )
         elif isinstance(source, ApiSource) and source.dependency is None:
             plan.add_step(
@@ -769,6 +779,21 @@ def _build_plan(
             )
         elif isinstance(source, ApiSource):
             est = _count_dependent_inputs(source, base_path, metadata)
+            dep_mapping = None
+            if source.dependency:
+                dep = source.dependency
+                parent_endpoint = None
+                for s in ordered:
+                    if s.id == dep.from_source and isinstance(s, ApiSource):
+                        parent_endpoint = s.endpoint
+                        break
+                dep_mapping = {
+                    "from_field": dep.field or dep.match_by,
+                    "to_param": source.input_key,
+                    "from_source": dep.from_source,
+                    "from_endpoint": parent_endpoint,
+                    "to_endpoint": source.endpoint,
+                }
             plan.add_step(
                 source_id=source.id,
                 endpoint=source.endpoint,
@@ -777,6 +802,7 @@ def _build_plan(
                 estimated_requests=est,
                 refresh=source.refresh,
                 llm_steps=llm_steps,
+                mapping=dep_mapping,
             )
 
     return plan
@@ -816,8 +842,8 @@ def _count_file_inputs(source: ApiSource, config_dir: Path | None) -> int | None
         return None
 
 
-def _print_plan(plan: CollectionPlan) -> dict[str, int]:
-    """Print the collection plan and return empty results."""
+def print_plan(steps: list[dict[str, Any]]) -> None:
+    """Print the collection plan as a Rich table."""
     from rich.console import Console
     from rich.table import Table
 
@@ -828,26 +854,35 @@ def _print_plan(plan: CollectionPlan) -> dict[str, int]:
     table.add_column("Endpoint")
     table.add_column("Type")
     table.add_column("Depends On")
+    table.add_column("Mapping")
     table.add_column("Est. Requests")
     table.add_column("LLM")
 
-    for i, step in enumerate(plan.steps, 1):
+    for i, step in enumerate(steps, 1):
         kind = step["kind"]
         if step.get("refresh") == "always":
             kind += " (refresh)"
         llm_col = f"{step['llm_steps']} step(s)" if step.get("llm_steps") else "-"
+
+        mapping = step.get("mapping")
+        if mapping and mapping.get("from_field") and mapping.get("to_param"):
+            from_src = mapping.get("from_source", "")
+            mapping_col = f"{from_src}.{mapping['from_field']} \u2192 {mapping['to_param']}"
+        else:
+            mapping_col = "-"
+
         table.add_row(
             str(i),
             step["source"],
             step["endpoint"] or "-",
             kind,
             step.get("dependency") or "-",
+            mapping_col,
             str(step.get("estimated_requests") or "?"),
             llm_col,
         )
 
     console.print(table)
-    return {}
 
 
 def run_collect(

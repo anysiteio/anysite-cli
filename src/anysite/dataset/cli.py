@@ -19,6 +19,52 @@ app = typer.Typer(
 )
 
 
+_FIELD_RENAMES: dict[str, str] = {
+    "name": "id",
+    "parameters": "params",
+    "input": "params",
+    "dependencies": "dependency",
+    "source_type": "type",
+    "output": "transform.fields (for field selection/filtering)",
+}
+"""Common wrong field names → correct suggestions."""
+
+
+def _parse_error_suggestions(exc: Exception) -> list[str]:
+    """Extract actionable suggestions from Pydantic ValidationError."""
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError):
+        return ["Check YAML syntax in the config file"]
+
+    suggestions: list[str] = []
+    seen: set[str] = set()
+    for err in exc.errors():
+        if err["type"] == "extra_forbidden":
+            bad_field = str(err["loc"][-1]) if err["loc"] else "?"
+            loc = ".".join(str(p) for p in err["loc"][:-1])
+            correct = _FIELD_RENAMES.get(bad_field)
+            if correct and bad_field not in seen:
+                suggestions.append(
+                    f"Unknown field '{bad_field}' in {loc} — "
+                    f"did you mean '{correct}'?"
+                )
+                seen.add(bad_field)
+            elif bad_field not in seen:
+                suggestions.append(
+                    f"Unknown field '{bad_field}' in {loc} — "
+                    f"not a valid source field"
+                )
+                seen.add(bad_field)
+        elif err["type"] == "list_type":
+            loc = ".".join(str(p) for p in err["loc"])
+            suggestions.append(f"{loc}: expected a list (use '- item' YAML syntax)")
+
+    if not suggestions:
+        suggestions.append("Check YAML syntax in the config file")
+    return suggestions
+
+
 def _load_config(path: Path, *, json_output: bool = False) -> Any:
     """Load and validate dataset config from YAML."""
     from anysite.dataset.models import DatasetConfig
@@ -37,13 +83,14 @@ def _load_config(path: Path, *, json_output: bool = False) -> Any:
     try:
         return DatasetConfig.from_yaml(path)
     except Exception as e:
+        suggestions = _parse_error_suggestions(e)
         if json_output:
             from anysite.cli.json_output import json_error
 
             json_error(
                 "CONFIG_PARSE_ERROR",
                 f"Error parsing dataset config: {e}",
-                suggestions=["Check YAML syntax in the config file"],
+                suggestions=suggestions,
             )
         typer.echo(f"Error parsing dataset config: {e}", err=True)
         raise typer.Exit(1) from None
@@ -241,10 +288,30 @@ def collect(
             no_llm=no_llm,
         )
 
+        # Handle dry-run output (plan data)
+        if dry_run:
+            plan_steps = results.get("_plan", [])
+            if json_output:
+                from anysite.cli.json_output import json_response
+
+                json_response(
+                    {"plan": plan_steps, "step_count": len(plan_steps)},
+                    hints=[
+                        ("Collect data", f"anysite dataset collect {config_path}"),
+                        ("Validate config", f"anysite dataset validate {config_path}"),
+                    ],
+                    command="anysite dataset collect --dry-run",
+                )
+            else:
+                from anysite.dataset.collector import print_plan
+
+                print_plan(plan_steps)
+            return
+
         total = sum(results.values())
         first_source = next(iter(results), None)
 
-        if json_output and not dry_run:
+        if json_output:
             from anysite.cli.json_output import json_response
 
             hints = [
@@ -269,7 +336,7 @@ def collect(
                 hints=hints,
                 command="anysite dataset collect",
             )
-        elif not dry_run and not quiet:
+        elif not quiet:
             console = Console()
             console.print(
                 f"\n[bold green]Done.[/bold green] "
@@ -298,7 +365,7 @@ def collect(
             print_hints(hints, quiet=quiet)
 
         # Auto-load into database if requested
-        if load_db and not dry_run:
+        if load_db:
             _run_load_db(config, load_db, source_filter=source, quiet=quiet)
 
     except DatasetError as e:
