@@ -1264,3 +1264,103 @@ class TestSourceFilter:
         records = read_parquet(tmp_path / "data" / "raw" / "items")
         assert len(records) == 1
         assert records[0]["text"] == "world"
+
+
+# ---------------------------------------------------------------------------
+# Per-source error handling (skip vs stop)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceErrorHandling:
+    """Test that a failing source is skipped (default) or stops the pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_independent_source_error_skipped_by_default(self, tmp_path):
+        """A 4xx error on an independent source should be skipped, not crash the pipeline."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(id="bad_source", endpoint="/api/bad"),
+                ApiSource(id="good_source", endpoint="/api/good"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+
+            async def mock_post(endpoint, data=None):  # noqa: ARG001
+                if endpoint == "/api/bad":
+                    raise Exception("404 Not Found")
+                return [{"name": "Alice"}]
+
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, quiet=True)
+
+        # bad_source should be 0 (skipped), good_source should succeed
+        assert results["bad_source"] == 0
+        assert results["good_source"] == 1
+
+    @pytest.mark.asyncio
+    async def test_source_error_stop_raises(self, tmp_path):
+        """When on_error='stop', a failing source should raise and stop the pipeline."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(id="bad_source", endpoint="/api/bad", on_error="stop"),
+                ApiSource(id="good_source", endpoint="/api/good"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+
+            async def mock_post(endpoint, data=None):  # noqa: ARG001
+                if endpoint == "/api/bad":
+                    raise Exception("500 Server Error")
+                return [{"name": "Alice"}]
+
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            with pytest.raises(Exception, match="500 Server Error"):
+                await collect_dataset(config, quiet=True)
+
+    @pytest.mark.asyncio
+    async def test_multiple_sources_first_fails_rest_continue(self, tmp_path):
+        """Multiple sources: first fails (skip), second and third succeed."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(id="src_a", endpoint="/api/a"),
+                ApiSource(id="src_b", endpoint="/api/b"),
+                ApiSource(id="src_c", endpoint="/api/c"),
+            ],
+            storage={"format": "parquet", "path": str(tmp_path / "data")},
+        )
+
+        with patch("anysite.dataset.collector.create_client") as mock_create:
+            mock_client = AsyncMock()
+
+            async def mock_post(endpoint, data=None):  # noqa: ARG001
+                if endpoint == "/api/a":
+                    raise Exception("Rate limit exceeded")
+                return [{"result": endpoint}]
+
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create.return_value = mock_client
+
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["src_a"] == 0
+        assert results["src_b"] == 1
+        assert results["src_c"] == 1

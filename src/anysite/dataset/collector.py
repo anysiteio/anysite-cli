@@ -22,7 +22,7 @@ from anysite.dataset.storage import (
     read_latest_parquet,
     write_parquet,
 )
-from anysite.output.console import print_info, print_success, print_warning
+from anysite.output.console import print_error, print_info, print_success, print_warning
 from anysite.streaming.progress import ProgressTracker
 from anysite.utils.fields import extract_field, parse_field_path
 
@@ -140,92 +140,37 @@ async def collect_dataset(
                     results[source.id] = info.get("record_count", 0) if info else 0
                     continue
 
-            if not quiet:
-                if isinstance(source, UnionSource):
-                    print_info(
-                        f"Collecting {source.id} (union of {', '.join(source.sources)})..."
-                    )
-                elif isinstance(source, LlmSource):
-                    print_info(f"Collecting {source.id} (LLM processing)...")
-                else:
-                    print_info(f"Collecting {source.id} from {source.endpoint}...")
+            # Resolve on_error for this source (default: skip)
+            source_on_error = "skip"
+            if isinstance(source, ApiSource) and source.on_error:
+                source_on_error = source.on_error
 
-            if isinstance(source, UnionSource):
-                records = await _collect_union(source, base_path, quiet=quiet)
-            elif isinstance(source, LlmSource):
-                records = await _collect_llm(source, base_path, quiet=quiet)
-            elif isinstance(source, ApiSource) and source.from_file is not None:
-                file_base = config_dir if config_dir else Path.cwd()
-                records = await _collect_from_file(
+            try:
+                records = await _collect_source(
                     source,
-                    config_dir=file_base,
+                    base_path=base_path,
+                    config_dir=config_dir,
                     metadata=metadata,
                     incremental=incremental,
                     quiet=quiet,
+                    no_llm=no_llm,
+                    today=today,
+                    config=config,
                 )
-            elif isinstance(source, ApiSource) and source.dependency is None:
-                records = await _collect_independent(source)
-            else:
-                records = await _collect_dependent(
-                    source,  # type: ignore[arg-type]
-                    base_path,
-                    metadata=metadata,
-                    incremental=incremental,
-                    quiet=quiet,
-                )
-
-            # Apply source-level filter (before LLM and Parquet write)
-            if source.filter and records:
-                from anysite.dataset.transformer import parse_filter
-
-                pred = parse_filter(source.filter)
-                if pred:
-                    before = len(records)
-                    records = [r for r in records if pred(r)]
-                    if not quiet and len(records) != before:
-                        print_info(f"  Filter: {before} -> {len(records)} records")
-
-            # LLM enrichment (after collection, before Parquet write)
-            if source.llm and records and not no_llm:
-                from anysite.dataset.llm_enrichment import enrich_records
-
+            except Exception as source_err:
+                if source_on_error == "stop":
+                    raise
+                logger.warning("Source %s failed: %s", source.id, source_err)
                 if not quiet:
-                    print_info(f"  Running {len(source.llm)} LLM enrichment step(s)...")
-                records = await enrich_records(records, source.llm, quiet=quiet)
+                    print_error(f"Source {source.id} failed: {source_err} (skipping)")
+                results[source.id] = 0
+                continue
 
-            # Write FULL records to Parquet (preserves all fields for dependency resolution)
-            parquet_path = get_parquet_path(base_path, source.id, today)
-            count = write_parquet(records, parquet_path)
-            metadata.update_source(source.id, count, today)
-
-            # Apply per-source transform for exports only (does NOT affect Parquet)
-            export_records = records
-            if source.transform and records:
-                from anysite.dataset.transformer import RecordTransformer
-
-                transformer = RecordTransformer(source.transform)
-                before = len(records)
-                export_records = transformer.apply([dict(r) for r in records])
-                if not quiet and len(export_records) != before:
-                    print_info(f"  Transform: {before} -> {len(export_records)} records")
-
-            # Run per-source exports with transformed records
-            if source.export and export_records:
-                from anysite.dataset.exporters import run_exports
-
-                await run_exports(export_records, source.export, source.id, config.name)
-
-            # Track collected inputs for incremental dedup
-            if records:
-                input_values = [r["_input_value"] for r in records if "_input_value" in r]
-                if input_values:
-                    metadata.update_collected_inputs(source.id, input_values)
-
-            results[source.id] = count
-            total_records += count
+            results[source.id] = len(records)
+            total_records += len(records)
 
             if not quiet:
-                print_success(f"Collected {count} records for {source.id}")
+                print_success(f"Collected {len(records)} records for {source.id}")
 
     except Exception as e:
         error_msg = str(e)
@@ -269,6 +214,105 @@ async def collect_dataset(
             log_handler.close()
 
     return results
+
+
+async def _collect_source(
+    source: DatasetSource,
+    *,
+    base_path: Path,
+    config_dir: Path,
+    metadata: MetadataStore,
+    incremental: bool,
+    quiet: bool,
+    no_llm: bool,
+    today: date,
+    config: DatasetConfig,
+) -> list[dict[str, Any]]:
+    """Collect, enrich, store and export a single source.
+
+    Returns the list of collected records. Raises on failure so the
+    caller can decide whether to skip or stop.
+    """
+    if not quiet:
+        if isinstance(source, UnionSource):
+            print_info(f"Collecting {source.id} (union of {', '.join(source.sources)})...")
+        elif isinstance(source, LlmSource):
+            print_info(f"Collecting {source.id} (LLM processing)...")
+        else:
+            print_info(f"Collecting {source.id} from {source.endpoint}...")
+
+    if isinstance(source, UnionSource):
+        records = await _collect_union(source, base_path, quiet=quiet)
+    elif isinstance(source, LlmSource):
+        records = await _collect_llm(source, base_path, quiet=quiet)
+    elif isinstance(source, ApiSource) and source.from_file is not None:
+        file_base = config_dir if config_dir else Path.cwd()
+        records = await _collect_from_file(
+            source,
+            config_dir=file_base,
+            metadata=metadata,
+            incremental=incremental,
+            quiet=quiet,
+        )
+    elif isinstance(source, ApiSource) and source.dependency is None:
+        records = await _collect_independent(source)
+    else:
+        records = await _collect_dependent(
+            source,  # type: ignore[arg-type]
+            base_path,
+            metadata=metadata,
+            incremental=incremental,
+            quiet=quiet,
+        )
+
+    # Apply source-level filter (before LLM and Parquet write)
+    if source.filter and records:
+        from anysite.dataset.transformer import parse_filter
+
+        pred = parse_filter(source.filter)
+        if pred:
+            before = len(records)
+            records = [r for r in records if pred(r)]
+            if not quiet and len(records) != before:
+                print_info(f"  Filter: {before} -> {len(records)} records")
+
+    # LLM enrichment (after collection, before Parquet write)
+    if source.llm and records and not no_llm:
+        from anysite.dataset.llm_enrichment import enrich_records
+
+        if not quiet:
+            print_info(f"  Running {len(source.llm)} LLM enrichment step(s)...")
+        records = await enrich_records(records, source.llm, quiet=quiet)
+
+    # Write FULL records to Parquet (preserves all fields for dependency resolution)
+    parquet_path = get_parquet_path(base_path, source.id, today)
+    write_parquet(records, parquet_path)
+    metadata.update_source(source.id, len(records), today)
+
+    # Apply per-source transform for exports only (does NOT affect Parquet)
+    export_records = records
+    if source.transform and records:
+        from anysite.dataset.transformer import RecordTransformer
+
+        transformer = RecordTransformer(source.transform)
+        before = len(records)
+        export_records = transformer.apply([dict(r) for r in records])
+        if not quiet and len(export_records) != before:
+            print_info(f"  Transform: {before} -> {len(export_records)} records")
+
+    # Run per-source exports with transformed records
+    if source.export and export_records:
+        from anysite.dataset.exporters import run_exports
+
+        await run_exports(export_records, source.export, source.id, config.name)
+
+    # Track collected inputs for incremental dedup
+    if records:
+        input_values = [r["_input_value"] for r in records if "_input_value" in r]
+        if input_values:
+            metadata.update_collected_inputs(source.id, input_values)
+
+    return records
 
 
 async def _collect_independent(source: ApiSource) -> list[dict[str, Any]]:
