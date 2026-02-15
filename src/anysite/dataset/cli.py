@@ -197,6 +197,37 @@ def collect(
 
     config = _load_config(config_path, json_output=json_output)
 
+    # Validate config in dry-run mode (dry-run = validate + plan)
+    if dry_run:
+        from anysite.dataset.validator import validate_dataset_config
+
+        validation = validate_dataset_config(config)
+
+        if not validation.valid:
+            if json_output:
+                from anysite.cli.json_output import json_error
+
+                json_error(
+                    "VALIDATION_ERROR",
+                    f"{len(validation.errors)} validation error(s)",
+                    suggestions=[f"{e.location}: {e.message}" for e in validation.errors],
+                )
+                raise typer.Exit(2)
+            console = Console()
+            for err in validation.errors:
+                console.print(f"[red]\u2717[/red] {err.location}: {err.message}")
+            for w in validation.warnings:
+                console.print(f"[yellow]![/yellow] {w}")
+            console.print("\n[bold red]Config invalid. Fix errors before collecting.[/bold red]")
+            raise typer.Exit(1)
+
+        if not json_output and not quiet:
+            console = Console()
+            console.print("[green]\u2713[/green] Config valid")
+            for w in validation.warnings:
+                console.print(f"[yellow]![/yellow] {w}")
+            console.print()
+
     try:
         from anysite.dataset.collector import run_collect
 
