@@ -28,9 +28,12 @@ class GuideSection:
 # ---------------------------------------------------------------------------
 
 SECTION_ORDER: list[str] = [
+    "workflow",
     "sources",
     "params",
     "dependencies",
+    "chains",
+    "fields_matrix",
     "llm",
     "transform",
     "export",
@@ -40,6 +43,7 @@ SECTION_ORDER: list[str] = [
     "notifications",
     "incremental",
     "validation",
+    "mistakes",
 ]
 
 
@@ -48,6 +52,60 @@ SECTION_ORDER: list[str] = [
 # ---------------------------------------------------------------------------
 
 GUIDE_SECTIONS: dict[str, GuideSection] = {
+    # ------------------------------------------------------------------
+    # workflow
+    # ------------------------------------------------------------------
+    "workflow": GuideSection(
+        title="Agent Workflow",
+        description="Step-by-step process for building dataset configs",
+        content="""\
+Follow these steps when building a new dataset pipeline:
+
+STEP 1 — DISCOVER ENDPOINT FIELDS:
+Run `anysite describe <endpoint>` to see input parameters (with examples,
+defaults) and output fields (with nested structure). This tells you:
+  - What parameters the endpoint expects (input_key, params)
+  - What fields are in the output for dependency extraction (field)
+
+    anysite describe /api/linkedin/user/posts
+    anysite describe /api/linkedin/user/posts --json
+
+STEP 2 — DRAFT YAML CONFIG:
+Write the dataset YAML with sources, dependencies, and LLM steps.
+Use the output fields from Step 1 to set correct `dependency.field` paths.
+
+STEP 3 — VALIDATE:
+Fast check (< 0.1s) catches structural errors, missing deps, bad filters:
+
+    anysite dataset validate dataset.yaml --json
+
+STEP 4 — DRY RUN:
+Preview the collection plan with estimated request counts:
+
+    anysite dataset collect dataset.yaml --dry-run
+
+STEP 5 — COLLECT:
+Run the actual collection:
+
+    anysite dataset collect dataset.yaml
+    anysite dataset collect dataset.yaml --load-db mydb
+
+KEY RULE: ALWAYS run `anysite describe` before setting dependency.field.
+The output fields show exactly which paths exist. For example,
+`/api/linkedin/user/posts` output has `author` as
+`object{@type,internal_id,urn,...}` — so the author's URN is
+`author.urn.value`, NOT `urn.value` (which is the post's own URN).
+""",
+        examples=[
+            """\
+# Discover what an endpoint returns
+anysite describe /api/linkedin/user --json""",
+            """\
+# Validate + dry-run before collecting
+anysite dataset validate dataset.yaml --json
+anysite dataset collect dataset.yaml --dry-run""",
+        ],
+    ),
     # ------------------------------------------------------------------
     # sources
     # ------------------------------------------------------------------
@@ -341,6 +399,209 @@ These enable FK linking when loading into a relational database.
         ],
     ),
     # ------------------------------------------------------------------
+    # chains
+    # ------------------------------------------------------------------
+    "chains": GuideSection(
+        title="Common Dependency Chains",
+        description="Ready-to-use dependency configs for popular endpoint combinations",
+        content="""\
+These are the most common source dependency patterns. Always verify field
+paths with `anysite describe <endpoint>` before using.
+
+SEARCH → PROFILES:
+Extract profile URNs from search results, fetch full profiles.
+
+    - id: profiles
+      endpoint: /api/linkedin/user
+      dependency:
+        from_source: search_results   # parent: /api/linkedin/search/users
+        field: urn.value              # profile URN
+        dedupe: true
+      input_key: user
+      parallel: 5
+
+PROFILES → POSTS:
+Get posts authored by collected profiles.
+
+    - id: posts
+      endpoint: /api/linkedin/user/posts
+      dependency:
+        from_source: profiles         # parent: /api/linkedin/user
+        field: urn.value              # profile URN
+      input_key: urn
+      parallel: 3
+
+POSTS → COMMENTS:
+Get comments on collected posts.
+
+    - id: comments
+      endpoint: /api/linkedin/post/comments
+      dependency:
+        from_source: posts            # parent: /api/linkedin/user/posts
+        field: urn.value              # post activity URN
+      input_key: urn
+      parallel: 5
+
+POSTS → AUTHOR PROFILES (reverse lookup):
+Get full profiles of post authors. Use author.urn.value, NOT urn.value.
+
+    # COMMON MISTAKE: urn.value is the POST URN, not the author URN
+    - id: author_profiles
+      endpoint: /api/linkedin/user
+      dependency:
+        from_source: posts            # parent: /api/linkedin/user/posts
+        field: author.urn.value       # AUTHOR's profile URN
+        dedupe: true
+      input_key: user
+      parallel: 5
+
+PROFILES → COMPANIES:
+Get companies where profiles work. Uses company.universalName.
+
+    - id: companies
+      endpoint: /api/linkedin/company
+      dependency:
+        from_source: profiles         # parent: /api/linkedin/user
+        field: company.universalName  # company slug (e.g., "microsoft")
+        dedupe: true
+      input_key: company
+      parallel: 3
+
+COMPANIES → COMPANY POSTS:
+Get posts from company pages.
+
+    - id: company_posts
+      endpoint: /api/linkedin/company/posts
+      dependency:
+        from_source: companies        # parent: /api/linkedin/company
+        field: universalName
+        dedupe: true
+      input_key: company
+      input_template:
+        company: "{value}"
+        count: 20
+      parallel: 3
+
+COMPANIES → EMPLOYEES:
+Search employees at companies. Requires input_template with array format.
+
+    - id: employees
+      endpoint: /api/linkedin/company/employees
+      dependency:
+        from_source: companies        # parent: /api/linkedin/company
+        field: urn.value              # company URN
+      input_key: companies
+      input_template:
+        companies:
+          - type: company
+            value: "{value}"
+        count: 5
+      parallel: 2
+
+QUICK REFERENCE TABLE:
+
+    Parent endpoint              → Child endpoint              field              input_key
+    /api/linkedin/search/users   → /api/linkedin/user          urn.value          user
+    /api/linkedin/user           → /api/linkedin/user/posts    urn.value          urn
+    /api/linkedin/user/posts     → /api/linkedin/post/comments urn.value          urn
+    /api/linkedin/user/posts     → /api/linkedin/user (author) author.urn.value   user
+    /api/linkedin/user           → /api/linkedin/company       company.universalName  company
+    /api/linkedin/company        → /api/linkedin/company/posts universalName      company (template)
+    /api/linkedin/company        → /api/linkedin/company/employees  urn.value     companies (template)
+""",
+        examples=[
+            """\
+# Full chain: search → profiles → posts → comments
+sources:
+  - id: search
+    endpoint: /api/linkedin/search/users
+    params: { keywords: "CTO", count: 50 }
+  - id: profiles
+    endpoint: /api/linkedin/user
+    dependency: { from_source: search, field: urn.value, dedupe: true }
+    input_key: user
+    parallel: 5
+  - id: posts
+    endpoint: /api/linkedin/user/posts
+    dependency: { from_source: profiles, field: urn.value }
+    input_key: urn
+    parallel: 3
+  - id: comments
+    endpoint: /api/linkedin/post/comments
+    dependency: { from_source: posts, field: urn.value }
+    input_key: urn
+    parallel: 5""",
+        ],
+    ),
+    # ------------------------------------------------------------------
+    # fields_matrix
+    # ------------------------------------------------------------------
+    "fields_matrix": GuideSection(
+        title="Required Fields by Source Type",
+        description="Which fields are required, optional, or unavailable for each source type",
+        content="""\
+Three source types have different field requirements:
+
+TYPE: API (default — type can be omitted)
+  Required:  id, endpoint
+  Optional:  params, input_key, input_template, from_file, file_field,
+             dependency, parallel, rate_limit, on_error, refresh,
+             filter, llm, transform, export, db_load
+
+TYPE: LLM (type: llm)
+  Required:  id, type: llm, dependency (parent source), llm (>= 1 step)
+  Optional:  filter, transform, export, db_load, refresh
+  N/A:       endpoint, params, input_key, input_template, from_file,
+             file_field, parallel, rate_limit, on_error
+
+TYPE: UNION (type: union)
+  Required:  id, type: union, sources (list of parent IDs)
+  Optional:  dedupe_by, dependency, filter, llm, transform, export,
+             db_load, refresh
+  N/A:       endpoint, params, input_key, input_template, from_file,
+             file_field, parallel, rate_limit, on_error
+
+DEFAULTS:
+  parallel:          1
+  on_error:          "skip"
+  refresh:           "auto"
+  storage.path:      "./data/"
+  db_load.exclude:   ["_input_value", "_parent_source"]
+  db_load.sync:      "full"
+  summarize max_length: 100 (words)
+
+IMPORTANT NOTES:
+  - `type` defaults to "api" when omitted
+  - `dependency.field` is optional (needed for value extraction, not for LLM sources)
+  - `endpoint` must start with `/` (e.g., `/api/linkedin/user`)
+  - `categories` in classify steps is a comma-separated STRING, not an array
+  - `partition_by` in storage is accepted but not currently used —
+    layout is always `raw/<source_id>/<date>.parquet`
+""",
+        examples=[
+            """\
+# Minimal api source (type defaults to "api")
+- id: search
+  endpoint: /api/linkedin/search/users
+  params: { keywords: "engineer", count: 50 }""",
+            """\
+# Minimal llm source
+- id: analyzed
+  type: llm
+  dependency: { from_source: profiles }
+  llm:
+    - type: classify
+      categories: "senior,mid,junior"
+      output_column: level""",
+            """\
+# Minimal union source
+- id: all_results
+  type: union
+  sources: [search_sf, search_ny]
+  dedupe_by: urn.value""",
+        ],
+    ),
+    # ------------------------------------------------------------------
     # llm
     # ------------------------------------------------------------------
     "llm": GuideSection(
@@ -465,6 +726,11 @@ LLM CONFIGURATION:
 LLM providers are configured via `anysite llm setup` which stores keys in
 `~/.anysite/config.yaml`. The `provider` and `model` fields on each step
 override the default config.
+
+CACHING:
+LLM responses are cached in SQLite (~/.anysite/llm_cache.db). Re-running
+collection on the same data doesn't re-call the LLM provider — cached
+results are reused. Clear with `anysite llm cache-clear`.
 """,
         examples=[
             """\
@@ -609,7 +875,7 @@ COMBINING ALL THREE LEVELS:
   filter: ".follower_count > 100"             # drop low-engagement before LLM
   llm:
     - type: classify
-      categories: ["candidate", "recruiter", "other"]
+      categories: "candidate,recruiter,other"
   transform:
     filter: ".category == \"candidate\""       # export only candidates
     fields: [name, headline, category]
@@ -1083,6 +1349,110 @@ anysite dataset validate dataset.yaml
 
 # JSON output for CI
 anysite dataset validate dataset.yaml --json""",
+        ],
+    ),
+    # ------------------------------------------------------------------
+    # mistakes
+    # ------------------------------------------------------------------
+    "mistakes": GuideSection(
+        title="Common Mistakes",
+        description="Frequent errors when building dataset configs and how to fix them",
+        content="""\
+1. WRONG DEPENDENCY FIELD PATH
+   Using the record's own URN instead of the related entity's URN.
+
+   WRONG: field: urn.value         # This is the POST's URN
+   RIGHT: field: author.urn.value  # This is the post AUTHOR's profile URN
+
+   Fix: Run `anysite describe <parent_endpoint>` and check output fields
+   to find the correct path to the value you need.
+
+2. MISSING {value} IN input_template
+   Static template without placeholder — same value for every request.
+
+   WRONG:
+     input_template:
+       company: "microsoft"       # Static! Same for every request
+
+   RIGHT:
+     input_template:
+       company: "{value}"         # Dynamic — replaced with extracted value
+
+3. ENDPOINT WITHOUT LEADING SLASH
+
+   WRONG: endpoint: api/linkedin/user
+   RIGHT: endpoint: /api/linkedin/user
+
+4. CATEGORIES AS ARRAY INSTEAD OF STRING
+
+   WRONG: categories: ["positive", "negative", "neutral"]
+   RIGHT: categories: "positive,negative,neutral"
+
+5. PARALLEL TOO HIGH
+   Setting parallel: 50+ causes rate limiting and errors.
+
+   WRONG: parallel: 50
+   RIGHT: parallel: 3              # 3-5 is optimal for most endpoints
+
+6. CONFUSING field AND input_key
+
+   field:     extracts value FROM parent source records (dependency.field)
+   input_key: puts value INTO the child API request parameter name
+
+   Example: extract urn.value from parent, send as `user` param:
+
+     dependency:
+       from_source: search_results
+       field: urn.value           # WHAT to extract from parent
+     input_key: user              # WHERE to put it in API call
+
+7. LLM SOURCE WITHOUT REQUIRED FIELDS
+
+   WRONG:
+     - id: enriched
+       type: llm
+       llm:
+         - type: classify
+           categories: "a,b"
+
+   RIGHT:
+     - id: enriched
+       type: llm
+       dependency:
+         from_source: profiles    # Required for type: llm!
+       llm:
+         - type: classify
+           categories: "a,b"
+
+8. DUCKDB VIEW NAMES WITH SPECIAL CHARACTERS
+   Source ID: search-results  → DuckDB view: search_results
+   Source ID: user.posts      → DuckDB view: user_posts
+
+   Hyphens and dots are replaced with underscores in view names.
+
+9. LLM RESPONSES ARE CACHED
+   LLM enrichment results are cached in SQLite (~/.anysite/llm_cache.db).
+   Re-running collection with the same data won't re-call the LLM provider.
+   Clear cache with: anysite llm cache-clear
+
+10. VALIDATE CATCHES MOST ERRORS
+    Always validate before collecting:
+
+    anysite dataset validate dataset.yaml --json
+
+    Common validate messages:
+      "Endpoint must start with '/'"         → add leading /
+      "enrich step requires 'add'"           → add 'add' list to enrich step
+      "LLM source must have a dependency"    → add dependency block
+      "did you mean '=='?"                   → replace = with == in filter
+""",
+        examples=[
+            """\
+# Validate → fix → collect workflow
+anysite dataset validate dataset.yaml --json
+# Fix any errors...
+anysite dataset collect dataset.yaml --dry-run
+anysite dataset collect dataset.yaml""",
         ],
     ),
 }

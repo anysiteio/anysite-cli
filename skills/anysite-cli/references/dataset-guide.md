@@ -1,5 +1,19 @@
 # Dataset Pipeline & Database Guide
 
+## Agent Workflow
+
+Follow these steps when building a new dataset pipeline:
+
+1. **Discover endpoint fields**: `anysite describe <endpoint> --json` — see input params (with examples, defaults) and output fields (with nested structure)
+2. **Draft YAML config** — use output fields from step 1 for `dependency.field` paths
+3. **Validate**: `anysite dataset validate dataset.yaml --json` — catches structural errors in < 0.1s
+4. **Dry run**: `anysite dataset collect dataset.yaml --dry-run` — preview plan with estimated request counts
+5. **Collect**: `anysite dataset collect dataset.yaml` or `anysite dataset collect dataset.yaml --load-db mydb`
+
+**Key rule**: ALWAYS run `anysite describe` before setting `dependency.field`. The output fields show exactly which paths exist. For example, `/api/linkedin/user/posts` output has `author` as `object{@type,internal_id,urn,...}` — so the author's URN is `author.urn.value`, NOT `urn.value` (which is the post's own URN).
+
+---
+
 ## Dataset YAML Configuration
 
 ### Full Structure
@@ -129,7 +143,7 @@ All parent sources must have the same endpoint. Records are annotated with `_uni
   type: llm                       # Source type: api (default) | llm
   dependency:
     from_source: profiles         # Parent source (required)
-    field: name                   # Required by schema but not used for LLM sources
+    field: name                   # Optional — omit if not extracting values
   llm:                            # LLM enrichment steps (required for type: llm)
     - type: classify
       categories: "strong_fit,moderate_fit,weak_fit"
@@ -191,6 +205,75 @@ When Parquet stores nested objects as JSON strings, dot-notation traverses them:
 - `urn.value` — parses JSON string in `urn` field, extracts `.value`
 - `experience[0].company_urn` — array index + nested field
 - `internal_id.value` — nested object access
+
+### Common Dependency Chains
+
+Quick reference for popular endpoint combinations. Always verify with `anysite describe <endpoint>`.
+
+| Parent endpoint | Child endpoint | `field` | `input_key` | Notes |
+|----------------|---------------|---------|-------------|-------|
+| `/api/linkedin/search/users` | `/api/linkedin/user` | `urn.value` | `user` | |
+| `/api/linkedin/user` | `/api/linkedin/user/posts` | `urn.value` | `urn` | |
+| `/api/linkedin/user/posts` | `/api/linkedin/post/comments` | `urn.value` | `urn` | |
+| `/api/linkedin/user/posts` | `/api/linkedin/user` (author) | `author.urn.value` | `user` | NOT `urn.value` |
+| `/api/linkedin/user` | `/api/linkedin/company` | `company.universalName` | `company` | |
+| `/api/linkedin/company` | `/api/linkedin/company/posts` | `universalName` | `company` | needs `input_template` |
+| `/api/linkedin/company` | `/api/linkedin/company/employees` | `urn.value` | `companies` | needs `input_template` |
+
+**Posts → Author Profiles** (most common mistake — using wrong field):
+```yaml
+- id: author_profiles
+  endpoint: /api/linkedin/user
+  dependency:
+    from_source: posts
+    field: author.urn.value       # AUTHOR's URN, not post URN
+    dedupe: true
+  input_key: user
+  parallel: 5
+```
+
+**Companies → Employees** (requires array input_template):
+```yaml
+- id: employees
+  endpoint: /api/linkedin/company/employees
+  dependency:
+    from_source: companies
+    field: urn.value
+  input_key: companies
+  input_template:
+    companies:
+      - type: company
+        value: "{value}"
+    count: 5
+  parallel: 2
+```
+
+### Required Fields by Source Type
+
+| Field | `api` (default) | `llm` | `union` |
+|-------|-----------------|-------|---------|
+| `id` | required | required | required |
+| `type` | optional (defaults to "api") | required: `llm` | required: `union` |
+| `endpoint` | required | N/A | N/A |
+| `dependency` | optional | **required** | N/A |
+| `llm` | optional | **required** (>= 1 step) | optional |
+| `sources` | N/A | N/A | **required** |
+| `params` | optional | N/A | N/A |
+| `input_key` | optional | N/A | N/A |
+| `input_template` | optional | N/A | N/A |
+| `from_file` | optional | N/A | N/A |
+| `parallel` | optional (default: 1) | N/A | N/A |
+| `filter` | optional | optional | optional |
+| `transform` | optional | optional | optional |
+| `export` | optional | optional | optional |
+| `db_load` | optional | optional | optional |
+| `dedupe_by` | N/A | N/A | optional |
+
+**Key notes:**
+- `dependency.field` is optional (not required) — needed for value extraction but not for LLM sources
+- `endpoint` must start with `/` (e.g., `/api/linkedin/user`)
+- `categories` in classify steps is a comma-separated **string**, not an array
+- `partition_by` in storage config is accepted but not currently used — layout is always `raw/<source_id>/<date>.parquet`
 
 ---
 
@@ -276,7 +359,7 @@ Use `refresh: always` for sources with frequently changing data (e.g., posts, ac
 
 ## Query Commands (DuckDB)
 
-Each source becomes a DuckDB view named after its ID.
+Each source becomes a DuckDB view named after its ID. Hyphens and dots in source IDs are replaced with underscores (e.g., `search-results` → `search_results`).
 
 ```bash
 # Direct SQL
@@ -570,6 +653,10 @@ anysite dataset collect dataset.yaml --no-llm
 anysite dataset collect dataset.yaml --dry-run
 ```
 
+### LLM Response Caching
+
+LLM responses are cached in SQLite (`~/.anysite/llm_cache.db`). Re-running collection on the same data reuses cached results without calling the LLM provider. Clear with `anysite llm cache-clear`.
+
 ### Incremental Behavior
 
 `--incremental` skips already-collected inputs at collection stage — only new records reach LLM enrichment. LLM response cache provides additional savings for repeated content.
@@ -703,4 +790,28 @@ anysite dataset reset-cursor dataset.yaml
 
 # Reset specific source
 anysite dataset reset-cursor dataset.yaml --source profiles
+```
+
+---
+
+## Common Mistakes
+
+| # | Mistake | Fix |
+|---|---------|-----|
+| 1 | `field: urn.value` for author profiles (wrong URN) | Use `field: author.urn.value` — run `anysite describe` to find correct path |
+| 2 | `input_template: { company: "microsoft" }` (missing placeholder) | Use `company: "{value}"` — `{value}` is replaced with extracted value |
+| 3 | `endpoint: api/linkedin/user` (no leading `/`) | Use `endpoint: /api/linkedin/user` |
+| 4 | `categories: ["pos", "neg"]` (array) | Use `categories: "pos,neg"` — comma-separated string |
+| 5 | `parallel: 50` (too high) | Use `parallel: 3` to `5` — higher causes rate limiting |
+| 6 | Confusing `field` and `input_key` | `field` = WHAT to extract from parent; `input_key` = WHERE to put it in API call |
+| 7 | `type: llm` without `dependency` | LLM sources require `dependency` (parent source) and `llm` (>= 1 step) |
+| 8 | SQL query uses `search-results` view name | Hyphens → underscores in DuckDB views: use `search_results` |
+
+**Validate catches most errors:**
+```bash
+anysite dataset validate dataset.yaml --json
+# "Endpoint must start with '/'"           → add leading /
+# "enrich step requires 'add'"             → add 'add' list to enrich step
+# "LLM source must have a dependency"      → add dependency block
+# "did you mean '=='?"                     → replace = with == in filter
 ```
