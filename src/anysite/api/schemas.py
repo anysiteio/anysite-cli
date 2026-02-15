@@ -378,7 +378,7 @@ def search_endpoints(query: str) -> list[dict[str, Any]]:
         tags = " ".join(info.get("tags", []))
         searchable = f"{path} {description} {tags}".lower()
 
-        if query_lower in searchable:
+        if _matches_query(query_lower, searchable):
             results.append({
                 "path": path,
                 "description": description,
@@ -386,6 +386,53 @@ def search_endpoints(query: str) -> list[dict[str, Any]]:
             })
 
     return results
+
+
+def _matches_query(query: str, searchable: str) -> bool:
+    """Check if query matches searchable text.
+
+    Supports exact substring match and prefix-word matching
+    (e.g., "company" matches "companies", "search company" matches
+    "search/companies").
+    """
+    # Fast path: exact substring
+    if query in searchable:
+        return True
+
+    # Split searchable into tokens (by / _ - and whitespace)
+    import re
+
+    tokens = re.split(r"[/\s_-]+", searchable)
+    query_words = query.split()
+
+    # Every query word must share a stem with at least one token:
+    # "company" matches "companies" (shared prefix >= 5 chars)
+    return all(_word_matches_any(word, tokens) for word in query_words)
+
+
+def _word_matches_any(word: str, tokens: list[str]) -> bool:
+    """Check if a query word matches any token via shared prefix.
+
+    Rules:
+    - Exact prefix match in either direction (always matches)
+    - Stem match: shared prefix must be >= 80% of the shorter word
+      ("company"/"companies" share "compan" = 6/7 = 86% → match)
+    """
+    for token in tokens:
+        if not token:
+            continue
+        if token.startswith(word) or word.startswith(token):
+            return True
+        # Shared prefix ratio — catches plural/verb forms
+        common = 0
+        for a, b in zip(word, token, strict=False):
+            if a != b:
+                break
+            common += 1
+        shorter = min(len(word), len(token))
+        if shorter >= 4 and common / shorter >= 0.8:
+            return True
+    return False
 
 
 def list_endpoints() -> list[dict[str, Any]]:
