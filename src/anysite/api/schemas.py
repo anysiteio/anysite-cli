@@ -357,6 +357,26 @@ def get_schema(command: str) -> dict[str, Any] | None:
     return None
 
 
+_SYNONYMS: dict[str, list[str]] = {
+    "profile": ["user", "person", "people"],
+    "user": ["profile", "person", "people"],
+    "person": ["user", "profile", "people"],
+    "people": ["user", "person", "profile", "search"],
+    "company": ["organization", "business", "employer"],
+    "organization": ["company", "business"],
+    "job": ["career", "position", "vacancy", "hiring"],
+    "career": ["job", "position"],
+    "post": ["article", "content", "publication"],
+    "article": ["post", "content"],
+    "search": ["find", "lookup", "discover"],
+    "find": ["search", "lookup"],
+    "comment": ["reply", "response"],
+    "follower": ["connection", "subscriber"],
+    "connection": ["follower", "contact"],
+}
+"""Common synonyms for endpoint search — maps query words to alternatives."""
+
+
 def search_endpoints(query: str) -> list[dict[str, Any]]:
     """Search endpoints by keyword in path, description, or tags.
 
@@ -391,9 +411,9 @@ def search_endpoints(query: str) -> list[dict[str, Any]]:
 def _matches_query(query: str, searchable: str) -> bool:
     """Check if query matches searchable text.
 
-    Supports exact substring match and prefix-word matching
-    (e.g., "company" matches "companies", "search company" matches
-    "search/companies").
+    Supports exact substring match, prefix-word matching
+    (e.g., "company" matches "companies"), and synonym expansion
+    (e.g., "profile" also tries "user").
     """
     # Fast path: exact substring
     if query in searchable:
@@ -405,9 +425,15 @@ def _matches_query(query: str, searchable: str) -> bool:
     tokens = re.split(r"[/\s_-]+", searchable)
     query_words = query.split()
 
-    # Every query word must share a stem with at least one token:
-    # "company" matches "companies" (shared prefix >= 5 chars)
-    return all(_word_matches_any(word, tokens) for word in query_words)
+    # Every query word (or one of its synonyms) must match a token
+    return all(_word_or_synonym_matches(word, tokens) for word in query_words)
+
+
+def _word_or_synonym_matches(word: str, tokens: list[str]) -> bool:
+    """Check if a word or any of its synonyms matches a token."""
+    if _word_matches_any(word, tokens):
+        return True
+    return any(_word_matches_any(syn, tokens) for syn in _SYNONYMS.get(word, []))
 
 
 def _word_matches_any(word: str, tokens: list[str]) -> bool:
@@ -419,7 +445,7 @@ def _word_matches_any(word: str, tokens: list[str]) -> bool:
       ("company"/"companies" share "compan" = 6/7 = 86% → match)
     """
     for token in tokens:
-        if not token:
+        if not token or len(token) < 3:
             continue
         if token.startswith(word) or word.startswith(token):
             return True
