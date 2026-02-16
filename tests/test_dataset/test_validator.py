@@ -380,6 +380,34 @@ class TestSchemaAwareValidation:
         result = validate_dataset_config(config, schema_cache=NO_SCHEMA)
         assert result.valid  # no endpoints in cache → no checks
 
+    def test_required_param_covered_by_input_template(self):
+        """Params provided via input_template should count as covered."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/user",
+                    params={"user": "test"},
+                ),
+                ApiSource(
+                    id="posts",
+                    endpoint="/api/linkedin/user/posts",
+                    input_key="urn",
+                    input_template={
+                        "urn": "{value}",
+                        "count": 10,
+                    },
+                    dependency=SourceDependency(
+                        from_source="profiles",
+                        field="urn.value",
+                    ),
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert result.valid
+
     def test_non_api_sources_skipped(self):
         """LlmSource should not trigger endpoint checks."""
         config = DatasetConfig(

@@ -191,6 +191,8 @@ def _validate_schema_aware(
         covered_params = set(source.params.keys())
         if source.input_key:
             covered_params.add(source.input_key)
+        if source.input_template:
+            covered_params.update(source.input_template.keys())
 
         for param_name, param_info in input_params.items():
             if not param_info.get("required"):
