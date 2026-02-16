@@ -218,16 +218,14 @@ Common fields available on all API sources:
   rate_limit: "10/s"
   on_error: skip""",
             """\
-# Dependent source with input_template
-- id: company_posts
-  endpoint: /api/linkedin/company/posts
+# Dependent source (URN prefix auto-added by CLI)
+- id: user_posts
+  endpoint: /api/linkedin/user/posts
   dependency:
-    from_source: companies
-    field: universalName
-    dedupe: true
-  input_key: company
-  input_template:
-    company: "{value}"
+    from_source: profiles
+    field: urn.value           # extracts raw ID, CLI adds urn:li:fsd_profile:
+  input_key: urn
+  params:
     count: 20
   parallel: 3""",
         ],
@@ -343,22 +341,38 @@ The `input_key` specifies which API parameter receives the extracted value:
     input_key: user         # extracted value goes to params.user
     input_key: company      # extracted value goes to params.company
 
+URN AUTO-NORMALIZATION:
+The CLI automatically detects expected URN formats from the API schema and
+prepends the correct prefix when a raw value is passed. For example:
+
+    field: urn.value              # extracts "7234173400267538433"
+    input_key: urn                # CLI auto-prepends "activity:" → "activity:7234..."
+
+    field: urn.value              # extracts "ACoAAA123..."
+    input_key: urn                # CLI auto-prepends "urn:li:fsd_profile:" → full URN
+
+    field: organizational_urn.value  # extracts "1441"
+    input_key: urn                   # CLI auto-prepends "company:" → "company:1441"
+
+This works transparently: values that already have the correct prefix pass
+through unchanged. You do NOT need `input_template` for URN prefixes.
+
 INPUT_TEMPLATE:
-Transform extracted values before passing to the API. Use `{value}` as a
-placeholder for the extracted value:
-
-    input_template:
-      type: company
-      value: "{value}"
-
-    # If field extracts "microsoft", the API call becomes:
-    # POST {"type": "company", "value": "microsoft"}
-
-Another common pattern -- adding static params alongside the dynamic value:
+Use `input_template` ONLY when you need to build a custom payload structure
+— for example, adding extra static params or creating nested objects.
+Use `{value}` as a placeholder for the extracted value:
 
     input_template:
       keywords: "CTO OR VP Engineering"
       company: "{value}"
+
+    # If field extracts "microsoft", the API call becomes:
+    # POST {"keywords": "CTO OR VP Engineering", "company": "microsoft"}
+
+Do NOT use `input_template` just to add URN prefixes — auto-normalization
+handles this automatically. Use `input_template` only for:
+  - Adding extra static params alongside the dynamic value
+  - Building nested/array payload structures the API requires
 
 REFRESH MODES:
 Controls how dependent sources behave on incremental runs:
@@ -468,17 +482,16 @@ Get companies where profiles work. Uses company.universalName.
       parallel: 3
 
 COMPANIES → COMPANY POSTS:
-Get posts from company pages.
+Get posts from company pages. URN prefix (`company:`) is auto-added by CLI.
 
     - id: company_posts
       endpoint: /api/linkedin/company/posts
       dependency:
         from_source: companies        # parent: /api/linkedin/company
-        field: universalName
+        field: organizational_urn.value  # extracts "1441", CLI adds "company:"
         dedupe: true
-      input_key: company
-      input_template:
-        company: "{value}"
+      input_key: urn
+      params:
         count: 20
       parallel: 3
 
@@ -499,15 +512,17 @@ Search employees at companies. Requires input_template with array format.
       parallel: 2
 
 QUICK REFERENCE TABLE:
+URN prefixes (activity:, company:, urn:li:fsd_profile:) are auto-added by CLI.
 
-    Parent endpoint              → Child endpoint              field              input_key
-    /api/linkedin/search/users   → /api/linkedin/user          urn.value          user
-    /api/linkedin/user           → /api/linkedin/user/posts    urn.value          urn
-    /api/linkedin/user/posts     → /api/linkedin/post/comments urn.value          urn
-    /api/linkedin/user/posts     → /api/linkedin/user (author) author.urn.value   user
-    /api/linkedin/user           → /api/linkedin/company       company.universalName  company
-    /api/linkedin/company        → /api/linkedin/company/posts universalName      company (template)
-    /api/linkedin/company        → /api/linkedin/company/employees  urn.value     companies (template)
+    Parent endpoint              → Child endpoint              field                    input_key
+    /api/linkedin/search/users   → /api/linkedin/user          urn.value                user
+    /api/linkedin/user           → /api/linkedin/user/posts    urn.value                urn
+    /api/linkedin/user/posts     → /api/linkedin/post/comments urn.value                urn
+    /api/linkedin/user/posts     → /api/linkedin/post          urn.value                urn
+    /api/linkedin/user/posts     → /api/linkedin/user (author) author.urn.value         user
+    /api/linkedin/user           → /api/linkedin/company       company.universalName    company
+    /api/linkedin/company        → /api/linkedin/company/posts organizational_urn.value urn
+    /api/linkedin/company        → /api/linkedin/company/employees  urn.value           companies (template)
 """,
         examples=[
             """\
@@ -1435,7 +1450,45 @@ anysite dataset validate dataset.yaml --json""",
    Re-running collection with the same data won't re-call the LLM provider.
    Clear cache with: anysite llm cache-clear
 
-10. VALIDATE CATCHES MOST ERRORS
+10. UNNECESSARY input_template FOR URN PREFIXES
+    The CLI auto-normalizes URN values. Do NOT use input_template for prefixes.
+
+    WRONG:
+      input_template:
+        urn: "activity:{value}"       # Unnecessary! CLI does this automatically
+      input_key: urn
+
+    WRONG:
+      input_template:
+        urn: "company:{value}"        # Unnecessary!
+      input_key: urn
+
+    RIGHT (just use input_key, CLI adds the prefix):
+      input_key: urn
+      params:
+        count: 10
+
+11. WRONG TEMPLATE SYNTAX: {{value}} INSTEAD OF {value}
+    input_template uses single braces, NOT Jinja-style double braces.
+
+    WRONG: input_template: { urn: "company:{{value}}" }  # double braces
+    RIGHT: input_template: { urn: "company:{value}" }    # single braces
+
+12. WRONG KEY IN input_template
+    The keys in input_template become the JSON payload keys. Make sure they
+    match what the API expects.
+
+    WRONG:
+      input_template:
+        format: "company:{value}"     # API expects "urn", not "format"
+
+    RIGHT:
+      input_template:
+        urn: "company:{value}"        # matches the API parameter name
+
+    Tip: Run `anysite describe <endpoint>` to see the correct parameter names.
+
+13. VALIDATE CATCHES MOST ERRORS
     Always validate before collecting:
 
     anysite dataset validate dataset.yaml --json
