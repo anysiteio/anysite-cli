@@ -253,6 +253,13 @@ async def execute_single_command(
         quiet=quiet,
     )
 
+    # Resolve URN prefix once per batch (not per request)
+    _urn_prefix: str | None = None
+    if input_key:
+        from anysite.api.schemas import get_urn_prefix
+
+        _urn_prefix = get_urn_prefix(endpoint, input_key)
+
     # Create the async fetch function
     async def _fetch_one(inp: str | dict[str, Any]) -> Any:
         # Determine the input value
@@ -260,6 +267,12 @@ async def execute_single_command(
             val = inp.get(input_key, inp.get("value", str(list(inp.values())[0])))
         else:
             val = inp
+
+        # Auto-normalize URN values
+        if _urn_prefix and isinstance(val, str):
+            from anysite.api.schemas import normalize_urn_value
+
+            val = normalize_urn_value(val, _urn_prefix)
 
         request_payload = {input_key: val}
         if extra_payload:

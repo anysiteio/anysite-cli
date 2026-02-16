@@ -518,7 +518,7 @@ def api_call(
 
     from pathlib import Path
 
-    from anysite.api.schemas import convert_value, get_schema
+    from anysite.api.schemas import convert_value, get_schema, get_urn_prefix, normalize_urn_value
     from anysite.cli.executor import run_search_command, run_single_command
     from anysite.cli.options import ErrorHandling as EH
     from anysite.output.formatters import OutputFormat
@@ -549,9 +549,15 @@ def api_call(
             if key in input_schema:
                 type_hint = input_schema[key].get("type", "string")
                 try:
-                    payload[key] = convert_value(value, type_hint)
+                    typed_val = convert_value(value, type_hint)
                 except (ValueError, TypeError):
-                    payload[key] = value
+                    typed_val = value
+                # Auto-normalize URN values
+                if isinstance(typed_val, str):
+                    prefix = get_urn_prefix(endpoint, key)
+                    if prefix:
+                        typed_val = normalize_urn_value(typed_val, prefix)
+                payload[key] = typed_val
             else:
                 payload[key] = value
     else:

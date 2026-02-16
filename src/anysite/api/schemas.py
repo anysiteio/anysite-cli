@@ -559,3 +559,60 @@ def convert_value(value: str, type_hint: str) -> str | int | bool | float | list
         except json.JSONDecodeError:
             pass
     return value
+
+
+def _extract_urn_example(examples: list[Any]) -> str | None:
+    """Find the first URN-like string from parameter examples.
+
+    Handles plain strings (``"activity:7234..."``) and dicts with a
+    ``"urn"`` key (``{"slug": "...", "urn": "activity:7234..."}``).
+    """
+    for ex in examples:
+        if isinstance(ex, dict):
+            ex = ex.get("urn")
+        if isinstance(ex, str) and ":" in ex:
+            return ex
+    return None
+
+
+def get_urn_prefix(
+    endpoint: str, param_name: str, *, schema_cache: dict[str, Any] | None = None
+) -> str | None:
+    """Extract the expected URN prefix for a parameter from schema examples.
+
+    Returns a prefix like ``"activity:"`` or ``"urn:li:fsd_profile:"``
+    that should be prepended to raw values.  Returns ``None`` when the
+    parameter has no URN-like examples.
+    """
+    if schema_cache is None:
+        schema_cache = load_cache() or {}
+    endpoints = schema_cache.get("endpoints", {})
+    ep_info = endpoints.get(endpoint)
+    if not ep_info:
+        return None
+    param_info = ep_info.get("input", {}).get(param_name)
+    if not param_info:
+        return None
+    examples = param_info.get("examples")
+    if not examples or not isinstance(examples, list):
+        return None
+    urn_example = _extract_urn_example(examples)
+    if not urn_example:
+        return None
+    last_colon = urn_example.rfind(":")
+    if last_colon <= 0:
+        return None
+    return urn_example[: last_colon + 1]
+
+
+def normalize_urn_value(value: str, prefix: str) -> str:
+    """Prepend *prefix* to *value* unless it already contains one.
+
+    Safe to call on values that are already fully-qualified — they are
+    returned unchanged.
+    """
+    if value.startswith(prefix):
+        return value
+    if ":" in value:
+        return value  # already has some prefix
+    return prefix + value

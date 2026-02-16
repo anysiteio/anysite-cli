@@ -406,6 +406,13 @@ async def _collect_batch(
     """
     endpoint = source.endpoint  # capture for closure
 
+    # Resolve URN prefix once per batch (not per request)
+    urn_prefix: str | None = None
+    if source.input_key and not source.input_template:
+        from anysite.api.schemas import get_urn_prefix
+
+        urn_prefix = get_urn_prefix(endpoint, source.input_key)
+
     limiter = RateLimiter(source.rate_limit) if source.rate_limit else None
     on_error = ErrorHandling(source.on_error) if source.on_error else ErrorHandling.SKIP
 
@@ -426,7 +433,13 @@ async def _collect_batch(
             else:
                 payload = {source.input_key: input_val, **source.params}  # type: ignore[dict-item]
         else:
-            payload = {source.input_key: val, **source.params}  # type: ignore[dict-item]
+            # Auto-normalize URN values when no explicit template is set
+            normalized = val
+            if urn_prefix and isinstance(val, str):
+                from anysite.api.schemas import normalize_urn_value
+
+                normalized = normalize_urn_value(val, urn_prefix)
+            payload = {source.input_key: normalized, **source.params}  # type: ignore[dict-item]
         async with create_client() as client:
             result = await client.post(endpoint, data=payload)
 
