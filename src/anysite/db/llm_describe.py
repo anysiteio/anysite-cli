@@ -8,6 +8,7 @@ from typing import Any
 import orjson
 
 from anysite.db.discovery import DatabaseCatalog, ImplicitRelationship
+from anysite.output.formatters import _json_default
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ async def _describe_table(
     sample_text = ""
     if table.sample_rows:
         sample_text = "\n\nSample data:\n" + orjson.dumps(
-            table.sample_rows[:3], option=orjson.OPT_INDENT_2
+            table.sample_rows[:3], option=orjson.OPT_INDENT_2, default=_json_default
         ).decode()
 
     prompt = BUILTIN_PROMPTS["describe_table"].format(
@@ -130,7 +131,7 @@ async def _describe_columns(
     sample_text = ""
     if table.sample_rows:
         sample_text = orjson.dumps(
-            table.sample_rows[:3], option=orjson.OPT_INDENT_2
+            table.sample_rows[:3], option=orjson.OPT_INDENT_2, default=_json_default
         ).decode()
 
     prompt = BUILTIN_PROMPTS["describe_columns"].format(

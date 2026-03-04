@@ -519,6 +519,10 @@ def query(
         str | None,
         typer.Option("--source", "-s", help="Source to query (auto-generates SELECT query)"),
     ] = None,
+    no_truncate: Annotated[
+        bool,
+        typer.Option("--no-truncate", help="Disable column truncation in table output"),
+    ] = False,
 ) -> None:
     """Run SQL queries against collected dataset data using DuckDB."""
     config = _load_config(config_path)
@@ -542,7 +546,7 @@ def query(
                 select_expr = expand_dot_fields(fields)
                 fields = None  # Already in SQL, don't post-filter
             elif exclude:
-                exclude_cols = ", ".join(c.strip() for c in exclude.split(","))
+                exclude_cols = ", ".join(f'"{c.strip()}"' for c in exclude.split(","))
                 select_expr = f"* EXCLUDE ({exclude_cols})"
             else:
                 select_expr = "*"
@@ -564,7 +568,7 @@ def query(
             typer.echo(f"Query error: {e}", err=True)
             raise typer.Exit(1) from None
 
-        _output_results(results, format, output, fields)
+        _output_results(results, format, output, fields, no_truncate=no_truncate)
 
 
 @app.command("stats")
@@ -1573,6 +1577,8 @@ def _output_results(
     format: str = "table",
     output: Path | None = None,
     fields: str | None = None,
+    *,
+    no_truncate: bool = False,
 ) -> None:
     """Output query results using the existing formatter pipeline."""
     from anysite.cli.options import parse_fields
@@ -1585,4 +1591,4 @@ def _output_results(
         raise typer.Exit(1) from None
 
     include_fields = parse_fields(fields)
-    format_output(data, fmt, include_fields, output, quiet=False)
+    format_output(data, fmt, include_fields, output, quiet=False, no_truncate=no_truncate)

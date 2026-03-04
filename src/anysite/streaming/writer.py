@@ -6,7 +6,7 @@ from typing import IO, Any
 
 import orjson
 
-from anysite.output.formatters import OutputFormat
+from anysite.output.formatters import OutputFormat, _json_default
 from anysite.utils.fields import exclude_fields, filter_fields
 
 
@@ -75,7 +75,7 @@ class StreamingWriter:
         writer = self._get_writer()
 
         if self.format == OutputFormat.JSONL:
-            line = orjson.dumps(record).decode("utf-8")
+            line = orjson.dumps(record, default=_json_default).decode("utf-8")
             writer.write(line + "\n")
             writer.flush()
 
@@ -106,7 +106,7 @@ class StreamingWriter:
 
         else:
             # Default to JSONL for streaming
-            line = orjson.dumps(record).decode("utf-8")
+            line = orjson.dumps(record, default=_json_default).decode("utf-8")
             writer.write(line + "\n")
             writer.flush()
 

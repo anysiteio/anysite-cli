@@ -2,6 +2,7 @@
 
 import csv
 import io
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,17 @@ import orjson
 from rich.table import Table
 
 from anysite.output.console import console
+
+
+def _json_default(obj: Any) -> Any:
+    """Default serializer for orjson types it cannot handle natively.
+
+    Converts Decimal to float (preserves numeric type in JSON),
+    falls back to str for other unserializable types (date, datetime, etc.).
+    """
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return str(obj)
 
 
 class OutputFormat(str, Enum):
@@ -111,7 +123,7 @@ def format_json(data: Any, indent: bool = True) -> str:
         JSON string
     """
     option = orjson.OPT_INDENT_2 if indent else 0
-    return orjson.dumps(data, option=option).decode("utf-8")
+    return orjson.dumps(data, option=option, default=_json_default).decode("utf-8")
 
 
 def format_jsonl(data: list[dict[str, Any]]) -> str:
@@ -123,7 +135,7 @@ def format_jsonl(data: list[dict[str, Any]]) -> str:
     Returns:
         JSONL string with one JSON object per line
     """
-    lines = [orjson.dumps(item).decode("utf-8") for item in data]
+    lines = [orjson.dumps(item, default=_json_default).decode("utf-8") for item in data]
     return "\n".join(lines)
 
 
@@ -157,12 +169,18 @@ def format_csv_output(data: list[dict[str, Any]], fields: list[str] | None = Non
     return output.getvalue()
 
 
-def format_table_output(data: list[dict[str, Any]], fields: list[str] | None = None) -> None:
+def format_table_output(
+    data: list[dict[str, Any]],
+    fields: list[str] | None = None,
+    *,
+    no_truncate: bool = False,
+) -> None:
     """Format data as a Rich table and print to console.
 
     Args:
         data: List of dictionaries
         fields: Optional list of fields to include
+        no_truncate: Disable column truncation (show full values)
     """
     if not data:
         console.print("[dim]No results[/dim]")
@@ -171,8 +189,8 @@ def format_table_output(data: list[dict[str, Any]], fields: list[str] | None = N
     # For single item, display vertically
     if len(data) == 1:
         table = Table(show_header=True, header_style="bold")
-        table.add_column("Field", style="cyan")
-        table.add_column("Value")
+        table.add_column("Field", style="cyan", no_wrap=no_truncate)
+        table.add_column("Value", no_wrap=no_truncate)
 
         item = data[0]
         if fields:
@@ -203,7 +221,7 @@ def format_table_output(data: list[dict[str, Any]], fields: list[str] | None = N
     # Create table
     table = Table(show_header=True, header_style="bold")
     for header in headers:
-        table.add_column(header)
+        table.add_column(header, no_wrap=no_truncate)
 
     for item in flattened:
         row = []
@@ -226,6 +244,8 @@ def format_output(
     exclude: list[str] | None = None,
     compact: bool = False,
     append: bool = False,
+    *,
+    no_truncate: bool = False,
 ) -> None:
     """Format and output data in the specified format.
 
@@ -259,7 +279,7 @@ def format_output(
             formatted = format_json(data, indent=not compact)
             _write_output(formatted, output_file, quiet, append=append)
         else:
-            format_table_output(data, fields)
+            format_table_output(data, fields, no_truncate=no_truncate)
         return
 
     if output_format == OutputFormat.JSON:

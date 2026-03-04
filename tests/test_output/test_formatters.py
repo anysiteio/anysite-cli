@@ -1,6 +1,8 @@
 """Tests for output formatters."""
 
+import datetime
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -11,6 +13,7 @@ from anysite.output.formatters import (
     format_csv_output,
     format_json,
     format_jsonl,
+    format_table_output,
 )
 
 
@@ -148,4 +151,48 @@ class TestFormatCsv:
         lines = result.strip().split("\n")
         assert "name" in lines[0]
         assert "city" in lines[0]
+
+
+class TestDecimalSerialization:
+    """Tests for decimal.Decimal JSON serialization (P0 bug fix)."""
+
+    def test_format_json_decimal(self):
+        data = {"amount": Decimal("99.95"), "name": "test"}
+        result = format_json(data)
+        parsed = json.loads(result)
+        assert parsed["amount"] == 99.95
+        assert isinstance(parsed["amount"], float)
+
+    def test_format_jsonl_decimal(self):
+        data = [{"amount": Decimal("10.5")}, {"amount": Decimal("20.3")}]
+        result = format_jsonl(data)
+        for line in result.split("\n"):
+            parsed = json.loads(line)
+            assert isinstance(parsed["amount"], float)
+
+    def test_format_json_unknown_type_falls_back_to_str(self):
+        data = {"d": datetime.date(2026, 1, 1)}
+        result = format_json(data)
+        parsed = json.loads(result)
+        assert parsed["d"] == "2026-01-01"
+
+    def test_format_json_mixed_types(self):
+        data = {"price": Decimal("49.99"), "count": 3, "name": "item"}
+        result = format_json(data)
+        parsed = json.loads(result)
+        assert parsed["price"] == 49.99
+        assert parsed["count"] == 3
+        assert parsed["name"] == "item"
+
+
+class TestTableNoTruncate:
+    """Tests for --no-truncate table output."""
+
+    def test_no_truncate_does_not_crash(self):
+        data = [{"email": "very.long.email@subdomain.example.com", "name": "Test"}]
+        format_table_output(data, no_truncate=True)
+
+    def test_default_does_not_crash(self):
+        data = [{"email": "test@example.com"}]
+        format_table_output(data, no_truncate=False)
         # age should not be in header if we properly implement field filtering

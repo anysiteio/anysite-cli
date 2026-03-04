@@ -1040,7 +1040,7 @@ def query(
     ] = None,
     file: Annotated[
         Path | None,
-        typer.Option("--file", "-f", help="Read SQL from file"),
+        typer.Option("--file", "--sql-file", "-f", help="Read SQL from file"),
     ] = None,
     format: Annotated[
         str,
@@ -1054,6 +1054,10 @@ def query(
         str | None,
         typer.Option("--fields", help="Comma-separated fields to include"),
     ] = None,
+    no_truncate: Annotated[
+        bool,
+        typer.Option("--no-truncate", help="Disable column truncation in table output"),
+    ] = False,
 ) -> None:
     """Run a SQL query against a database.
 
@@ -1088,7 +1092,7 @@ def query(
             typer.echo(f"Query error: {e}", err=True)
             raise typer.Exit(1) from None
 
-    _output_results(results, format, output, fields)
+    _output_results(results, format, output, fields, no_truncate=no_truncate)
 
 
 def _output_results(
@@ -1096,6 +1100,8 @@ def _output_results(
     format: str = "table",
     output: Path | None = None,
     fields: str | None = None,
+    *,
+    no_truncate: bool = False,
 ) -> None:
     """Output query results using the existing formatter pipeline."""
     from anysite.cli.options import parse_fields
@@ -1108,7 +1114,7 @@ def _output_results(
         raise typer.Exit(1) from None
 
     include_fields = parse_fields(fields)
-    format_output(data, fmt, include_fields, output, quiet=False)
+    format_output(data, fmt, include_fields, output, quiet=False, no_truncate=no_truncate)
 
 
 def _get_catalog_store() -> Any:
