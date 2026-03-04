@@ -110,7 +110,7 @@ Output fields (15):
 ```
 Use these dot-notation paths (e.g., `urn.value`) in `dependency.field`, `--fields`, and `db_load.fields`.
 
-**Key for agents:** Input param examples and defaults tell you exact expected formats — use them directly in `params`, `input_template`, and `key=value` CLI args. Array params like `companies` show item structure (e.g., `array[object{type,value}]`).
+**Key for agents:** Input param examples and defaults tell you exact expected formats — use them directly in `input` (or `params`), `input_template`, and `key=value` CLI args. Array params like `companies` show item structure (e.g., `array[object{type,value}]`). Dependency shorthand `${source.field}` in `input` values auto-expands to `dependency` + `input_key`.
 
 Map the data need to specific endpoints. Common chains:
 - Search → Detail (find entities, then get full profiles)
@@ -205,12 +205,13 @@ Search for entities, then get full details.
 sources:
   - id: search
     endpoint: /api/linkedin/search/users
-    params: { keywords: "CTO fintech", count: 50 }
+    input: { keywords: "CTO fintech", count: 50 }
   - id: profiles
     endpoint: /api/linkedin/user
     dependency: { from_source: search, field: urn.value }
     input_key: user
     parallel: 3
+    # Shorthand alternative: input: { user: "${search.urn.value}" }
 storage:
   format: parquet
   path: ./data/
@@ -222,10 +223,10 @@ Multiple searches combined and deduplicated, then enriched.
 sources:
   - id: search_a
     endpoint: /api/linkedin/search/users
-    params: { keywords: "CTO fintech", count: 50 }
+    input: { keywords: "CTO fintech", count: 50 }
   - id: search_b
     endpoint: /api/linkedin/search/users
-    params: { keywords: "VP Engineering fintech", count: 50 }
+    input: { keywords: "VP Engineering fintech", count: 50 }
   - id: all_results
     type: union
     sources: [search_a, search_b]
@@ -235,6 +236,7 @@ sources:
     dependency: { from_source: all_results, field: urn.value }
     input_key: user
     parallel: 3
+    # Shorthand alternative: input: { user: "${all_results.urn.value}" }
 storage:
   format: parquet
   path: ./data/
@@ -246,7 +248,7 @@ Deep company intelligence chain.
 sources:
   - id: company
     endpoint: /api/linkedin/company
-    params: { company: "anthropic" }
+    input: { company: "anthropic" }
   - id: employees
     endpoint: /api/linkedin/company/employees
     dependency: { from_source: company, field: urn.value }
@@ -259,6 +261,7 @@ sources:
     dependency: { from_source: employees, field: internal_id.value }
     input_key: user
     parallel: 3
+    # Shorthand alternative: input: { user: "${employees.internal_id.value}" }
 storage:
   format: parquet
   path: ./data/
@@ -354,13 +357,14 @@ Scheduled collection that only gets new data.
 sources:
   - id: search
     endpoint: /api/linkedin/search/users
-    params: { keywords: "ML engineer", count: 100 }
+    input: { keywords: "ML engineer", count: 100 }
     refresh: always
   - id: profiles
     endpoint: /api/linkedin/user
     dependency: { from_source: search, field: urn.value, dedupe: true }
     input_key: user
     parallel: 3
+    # Shorthand: input: { user: "${search.urn.value}" } (add dedupe separately)
     db_load:
       key: urn.value
       sync: full

@@ -25,7 +25,7 @@ description: Optional description
 sources:
   - id: source_id              # Unique identifier
     endpoint: /api/...         # API endpoint path
-    params: {}                 # Static API parameters
+    input: {}                  # Static API parameters
     from_file: inputs.txt      # Input file (txt/JSONL/CSV)
     file_field: column_name    # CSV column to extract
     input_key: param_name      # API parameter for input values
@@ -38,7 +38,7 @@ sources:
     parallel: 3                # Concurrent requests
     rate_limit: "10/s"         # Rate limiting
     on_error: skip             # stop or skip
-    refresh: always            # auto (default) or always — re-collect every run
+    refresh: always            # auto (default), always, or never (skip if data exists)
     filter: '.count > 10'     # Source filter (before LLM + Parquet write)
     transform:                 # Export filter (after Parquet write, for exports only)
       filter: '.status == "active"'
@@ -94,11 +94,11 @@ notifications:                 # Webhook notifications
 
 ### Five Source Types
 
-**Independent** — single API call with static params:
+**Independent** — single API call with static input:
 ```yaml
 - id: search_results
   endpoint: /api/linkedin/search/users
-  params:
+  input:
     keywords: "software engineer"
     count: 50
 ```
@@ -135,7 +135,7 @@ notifications:                 # Webhook notifications
   sources: [search_cto, search_vp]    # Parent source IDs to combine
   dedupe_by: urn.value                 # Optional: remove duplicates by field
 ```
-All parent sources must have the same endpoint. Records are annotated with `_union_source` (parent source ID). Cannot have `endpoint`, `dependency`, `from_file`, `input_key`, or `params`.
+All parent sources must have the same endpoint. Records are annotated with `_union_source` (parent source ID). Cannot have `endpoint`, `dependency`, `from_file`, `input_key`, or `input`.
 
 **LLM Source (type: llm)** — process parent data through LLM without API calls:
 ```yaml
@@ -163,7 +163,7 @@ All parent sources must have the same endpoint. Records are annotated with `_uni
 
 **type: llm source rules:**
 - **Requires**: `dependency` (parent source) and non-empty `llm` list
-- **Cannot have**: `endpoint`, `from_file`, `input_key`, `params`
+- **Cannot have**: `endpoint`, `from_file`, `input_key`, `input`
 - **Use case**: Run LLM enrichment on already-collected data without re-calling the API
 - **Run with**: `anysite dataset collect dataset.yaml --source profiles_analyzed`
 
@@ -182,6 +182,8 @@ companies → employees → profiles → posts → comments
 - `/api/linkedin/user` accepts both human-readable aliases (`satyanadella`) and URN values as the `user` parameter
 
 Always run `anysite describe <endpoint>` to verify available fields before setting up dependencies.
+
+**Note:** You can also use the `${source.field}` shorthand instead of explicit `dependency` + `input_key`. See the "Shorthand Syntax" section below.
 
 ### input_template
 
@@ -248,6 +250,33 @@ Quick reference for popular endpoint combinations. Always verify with `anysite d
   parallel: 2
 ```
 
+### Shorthand Syntax (`${source.field}`)
+
+Instead of writing explicit `dependency` + `input_key`, you can use `${source.field}` directly in `input`:
+
+```yaml
+# Shorthand (auto-expands to dependency + input_key):
+- id: profiles
+  endpoint: /api/linkedin/user
+  input:
+    user: ${search_results.urn.value}
+    count: 20
+```
+
+This is equivalent to:
+```yaml
+- id: profiles
+  endpoint: /api/linkedin/user
+  dependency:
+    from_source: search_results
+    field: urn.value
+  input_key: user
+  input:
+    count: 20
+```
+
+The `${source.field}` syntax extracts the source ID and field path automatically. Static parameters (like `count: 20`) are passed through as-is.
+
 ### Required Fields by Source Type
 
 | Field | `api` (default) | `llm` | `union` |
@@ -258,7 +287,7 @@ Quick reference for popular endpoint combinations. Always verify with `anysite d
 | `dependency` | optional | **required** | N/A |
 | `llm` | optional | **required** (>= 1 step) | optional |
 | `sources` | N/A | N/A | **required** |
-| `params` | optional | N/A | N/A |
+| `input` | optional | N/A | N/A |
 | `input_key` | optional | N/A | N/A |
 | `input_template` | optional | N/A | N/A |
 | `from_file` | optional | N/A | N/A |
@@ -311,6 +340,9 @@ anysite dataset collect dataset.yaml --source employees
 
 # Quiet mode
 anysite dataset collect dataset.yaml --quiet
+
+# Pilot run: max 100 inputs per source
+anysite dataset collect dataset.yaml --limit 100
 ```
 
 ### Provenance Tracking
@@ -344,8 +376,9 @@ Per-source `refresh` field controls behavior with `--incremental`:
 |---------|----------------|---------|
 | `refresh: auto` (default) | Skip collected inputs | Collect all |
 | `refresh: always` | Collect all (ignore cache) | Collect all |
+| `refresh: never` | Skip if data exists | Skip if data exists |
 
-Use `refresh: always` for sources with frequently changing data (e.g., posts, activity feeds) where you want fresh snapshots each run while still caching stable parent data.
+Use `refresh: always` for sources with frequently changing data (e.g., posts, activity feeds) where you want fresh snapshots each run while still caching stable parent data. Use `refresh: never` for stable reference data that only needs to be collected once.
 
 ### Storage Layout
 
@@ -372,6 +405,9 @@ anysite dataset query dataset.yaml --source profiles
 anysite dataset query dataset.yaml --source profiles \
   --fields "name, urn.value AS urn_id, headline"
 # Generates: SELECT name, json_extract_string(urn, '$.value') AS urn_id, headline FROM profiles
+
+# Exclude internal columns
+anysite dataset query dataset.yaml --source profiles --exclude "_input_value,_parent_source"
 
 # Output options
 anysite dataset query dataset.yaml --sql "SELECT * FROM companies" \

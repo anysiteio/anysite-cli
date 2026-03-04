@@ -152,7 +152,7 @@ anysite dataset init my-dataset
 
 ### Five Source Types
 
-1. **Independent** — single API call with static `params`
+1. **Independent** — single API call with static `input`
 2. **from_file** — batch calls iterating over input file values
 3. **Dependent** — batch calls using values extracted from a parent source
 4. **Union (type: union)** — combine records from multiple parent sources into one
@@ -168,7 +168,7 @@ sources:
   # === TYPE 1: Independent source (single API call) ===
   - id: search_results              # Unique identifier (required)
     endpoint: /api/linkedin/search/users  # API endpoint (required for type: api)
-    params:                         # Static API parameters
+    input:                          # Static API parameters
       keywords: "software engineer"
       count: 50
     parallel: 1                     # Concurrent requests: 1-10 (default: 1)
@@ -177,7 +177,7 @@ sources:
 
   - id: search_extra                # Another search (can be combined with union)
     endpoint: /api/linkedin/search/users
-    params: { keywords: "data engineer", count: 50 }
+    input: { keywords: "data engineer", count: 50 }
 
   # === TYPE 2: from_file source (batch from file) ===
   - id: companies
@@ -201,14 +201,22 @@ sources:
         - type: company
           value: "{value}"          # {value} = extracted value placeholder
       count: 5
-    refresh: auto                   # Incremental behavior: auto (default) | always
+    refresh: auto                   # Incremental behavior: auto (default) | always | never
+                                    # never = skip if data exists
+
+  # === Shorthand for dependent sources ===
+  # ${source.field} auto-expands to dependency + input_key:
+  - id: profiles
+    endpoint: /api/linkedin/user
+    input:
+      user: ${companies.urn.value}    # Equivalent to dependency + input_key above
 
   # === TYPE 4: Union source (combine multiple sources) ===
   - id: all_search_results
     type: union                     # Source type: api (default) | union | llm
     sources: [search_results, search_extra]  # Parent source IDs to combine (required)
     dedupe_by: urn.value            # Optional: field path for deduplication (dot-notation)
-    # NOTE: type: union cannot have endpoint, dependency, from_file, input_key, params
+    # NOTE: type: union cannot have endpoint, dependency, from_file, input_key, input
     # NOTE: all sources in the list must have the same endpoint (same data structure)
     # Records are annotated with _union_source = parent source ID
 
@@ -243,7 +251,7 @@ sources:
       - type: file
         path: ./output/{{source}}-{{date}}.csv  # Templates: {{date}}, {{source}}, {{dataset}}
         format: csv                 # Format: json | jsonl | csv
-    # NOTE: type: llm cannot have endpoint, from_file, input_key, params
+    # NOTE: type: llm cannot have endpoint, from_file, input_key, input
 
   # === OPTIONAL BLOCKS (any source type) ===
   # THREE-LEVEL FILTERING:
@@ -303,7 +311,7 @@ The `type: union` source combines records from multiple parent sources:
 
 - **Requires**: non-empty `sources` list (parent source IDs)
 - **Optional**: `dedupe_by` field path for removing duplicates (supports dot-notation)
-- **Cannot have**: `endpoint`, `dependency`, `from_file`, `input_key`, `params`
+- **Cannot have**: `endpoint`, `dependency`, `from_file`, `input_key`, `input`
 - **Validation**: all parent sources must have the same endpoint (same data structure)
 - **Use case**: merge multiple search results before a single dependent source processes them
 
@@ -311,11 +319,11 @@ The `type: union` source combines records from multiple parent sources:
 sources:
   - id: search_cto
     endpoint: /api/linkedin/search/users
-    params: { keywords: "CTO fintech", count: 50 }
+    input: { keywords: "CTO fintech", count: 50 }
 
   - id: search_vp
     endpoint: /api/linkedin/search/users
-    params: { keywords: "VP Engineering", count: 50 }
+    input: { keywords: "VP Engineering", count: 50 }
 
   # Union combines all search results
   - id: all_candidates
@@ -339,7 +347,7 @@ Records from union sources are annotated with `_union_source` (the parent source
 The `type: llm` source processes existing parent data without making API calls:
 
 - **Requires**: `dependency` (parent source) and non-empty `llm` list
-- **Cannot have**: `endpoint`, `from_file`, `input_key`, `params`
+- **Cannot have**: `endpoint`, `from_file`, `input_key`, `input`
 - **Use case**: Run LLM enrichment on already-collected data, re-analyze with different prompts
 
 ```bash
@@ -357,6 +365,7 @@ anysite dataset collect dataset.yaml --load-db pg       # Collect + auto-load to
 anysite dataset collect dataset.yaml --incremental      # Skip already-collected inputs
 anysite dataset collect dataset.yaml --source employees # Single source + dependencies
 anysite dataset collect dataset.yaml --no-llm           # Skip LLM enrichment steps
+anysite dataset collect dataset.yaml --limit 100        # Pilot run: max 100 inputs per source
 ```
 
 ### Incremental Collection (Resume Where You Left Off)
@@ -386,6 +395,9 @@ sources:
   - id: posts
     refresh: always    # always re-collects, ignores --incremental
                        # use for time-sensitive data (feeds, activity)
+
+  - id: companies
+    refresh: never     # skip if data exists (any snapshot)
 ```
 
 **Reset cursor:**
@@ -399,6 +411,7 @@ anysite dataset reset-cursor dataset.yaml --source posts   # specific source
 ```bash
 anysite dataset query dataset.yaml --sql "SELECT * FROM companies LIMIT 10"
 anysite dataset query dataset.yaml --source profiles --fields "name, urn.value AS id"
+anysite dataset query dataset.yaml --source profiles --exclude "_input_value,_parent_source"
 anysite dataset query dataset.yaml --interactive        # SQL shell
 anysite dataset stats dataset.yaml --source companies
 anysite dataset profile dataset.yaml

@@ -19,6 +19,7 @@ from anysite.dataset.models import ApiSource, DatasetConfig, DatasetSource, LlmS
 from anysite.dataset.storage import (
     MetadataStore,
     get_parquet_path,
+    get_source_dir,
     read_latest_parquet,
     write_parquet,
 )
@@ -71,6 +72,7 @@ async def collect_dataset(
     dry_run: bool = False,
     quiet: bool = False,
     no_llm: bool = False,
+    limit: int | None = None,
 ) -> dict[str, int]:
     """Collect all sources in a dataset.
 
@@ -107,6 +109,7 @@ async def collect_dataset(
             incremental,
             today,
             config_dir=config_dir,
+            limit=limit,
         )
         return {"_plan": plan.steps}
 
@@ -130,6 +133,16 @@ async def collect_dataset(
 
     try:
         for source in ordered:
+            # Check refresh: never — skip if ANY data already exists
+            if source.refresh == "never":
+                source_dir = get_source_dir(base_path, source.id)
+                if source_dir.exists() and any(source_dir.glob("*.parquet")):
+                    if not quiet:
+                        print_info(f"Skipping {source.id} (refresh: never, data exists)")
+                    info = metadata.get_source_info(source.id)
+                    results[source.id] = info.get("record_count", 0) if info else 0
+                    continue
+
             # Check incremental skip (refresh: always bypasses this)
             if incremental and source.refresh != "always":
                 parquet_path = get_parquet_path(base_path, source.id, today)
@@ -156,6 +169,7 @@ async def collect_dataset(
                     no_llm=no_llm,
                     today=today,
                     config=config,
+                    limit=limit,
                 )
             except Exception as source_err:
                 if source_on_error == "stop":
@@ -227,6 +241,7 @@ async def _collect_source(
     no_llm: bool,
     today: date,
     config: DatasetConfig,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Collect, enrich, store and export a single source.
 
@@ -253,6 +268,7 @@ async def _collect_source(
             metadata=metadata,
             incremental=incremental,
             quiet=quiet,
+            limit=limit,
         )
     elif isinstance(source, ApiSource) and source.dependency is None:
         records = await _collect_independent(source)
@@ -263,6 +279,7 @@ async def _collect_source(
             metadata=metadata,
             incremental=incremental,
             quiet=quiet,
+            limit=limit,
         )
 
     # Apply source-level filter (before LLM and Parquet write)
@@ -332,6 +349,7 @@ async def _collect_from_file(
     metadata: MetadataStore | None = None,
     incremental: bool = False,
     quiet: bool = False,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Collect a source by iterating over values from an input file."""
     from anysite.batch.input import InputParser
@@ -384,6 +402,12 @@ async def _collect_from_file(
         if not quiet:
             print_info(f"  All inputs already collected for {source.id}")
         return []
+
+    # Apply --limit
+    if limit and len(values) > limit:
+        if not quiet:
+            print_info(f"  Limiting to {limit} inputs (of {len(values)})")
+        values = values[:limit]
 
     if not quiet:
         print_info(f"  Found {len(values)} inputs from {file_path.name}")
@@ -596,6 +620,7 @@ async def _collect_dependent(
     metadata: MetadataStore | None = None,
     incremental: bool = False,
     quiet: bool = False,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Collect a dependent source by reading parent data and making per-value requests."""
     dep = source.dependency
@@ -635,6 +660,12 @@ async def _collect_dependent(
         if not quiet:
             print_info(f"  All inputs already collected for {source.id}")
         return []
+
+    # Apply --limit
+    if limit and len(values) > limit:
+        if not quiet:
+            print_info(f"  Limiting to {limit} inputs (of {len(values)})")
+        values = values[:limit]
 
     return await _collect_batch(source, values, parent_source=dep.from_source, quiet=quiet)
 
@@ -765,11 +796,18 @@ def _build_plan(
     today: date,
     *,
     config_dir: Path | None = None,
+    limit: int | None = None,
 ) -> CollectionPlan:
     """Build a dry-run plan with estimated input counts."""
     plan = CollectionPlan()
 
     for source in ordered:
+        # refresh: never — skip if any data exists
+        if source.refresh == "never":
+            source_dir = get_source_dir(base_path, source.id)
+            if source_dir.exists() and any(source_dir.glob("*.parquet")):
+                continue
+
         if incremental and source.refresh != "always":
             parquet_path = get_parquet_path(base_path, source.id, today)
             if parquet_path.exists():
@@ -807,6 +845,8 @@ def _build_plan(
             )
         elif isinstance(source, ApiSource) and source.from_file is not None:
             est = _count_file_inputs(source, config_dir)
+            if limit and est is not None:
+                est = min(est, limit)
             file_mapping = None
             if source.input_key:
                 file_mapping = {
@@ -836,6 +876,8 @@ def _build_plan(
             )
         elif isinstance(source, ApiSource):
             est = _count_dependent_inputs(source, base_path, metadata)
+            if limit and est is not None:
+                est = min(est, limit)
             dep_mapping = None
             if source.dependency:
                 dep = source.dependency

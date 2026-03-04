@@ -46,9 +46,11 @@ anysite dataset collect dataset.yaml
 anysite dataset collect dataset.yaml --source linkedin_profiles --incremental --dry-run
 anysite dataset collect dataset.yaml --no-llm
 anysite dataset collect dataset.yaml --load-db pg
+anysite dataset collect dataset.yaml --limit 10
 anysite dataset status dataset.yaml
 anysite dataset query dataset.yaml --sql "SELECT * FROM profiles LIMIT 10"
 anysite dataset query dataset.yaml --source profiles --fields "name, urn.value AS urn_id, headline"
+anysite dataset query dataset.yaml --source profiles --fields "name, headline" --exclude "_input_value,_parent_source"
 anysite dataset query dataset.yaml --interactive
 anysite dataset stats dataset.yaml --source profiles
 anysite dataset profile dataset.yaml
@@ -165,7 +167,7 @@ When releasing a new version:
 - `utils/fields.py` - Field selection with dot notation, array wildcards, built-in presets (minimal, contact, recruiting)
 - `utils/retry.py` - RetryConfig and retry logic
 - `dataset/__init__.py` - `check_data_deps()` — verifies optional duckdb/pyarrow are installed
-- `dataset/models.py` - Pydantic models for dataset YAML config. `DatasetSource` is a discriminated union of `ApiSource`, `LlmSource`, `UnionSource` (with `_SourceBase` shared fields), selected by `_source_discriminator()` (defaults to `"api"`). `EnrichFieldSpec` provides structured alternative to string-based LLM add specs. Other models: `DatasetConfig`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`, `DbLoadConfig`. Topological sort (Kahn's algorithm)
+- `dataset/models.py` - Pydantic models for dataset YAML config. `DatasetSource` is a discriminated union of `ApiSource`, `LlmSource`, `UnionSource` (with `_SourceBase` shared fields), selected by `_source_discriminator()` (defaults to `"api"`). `ApiSource.params` accepts `input` as a validation alias (preferred in YAML configs). `EnrichFieldSpec` provides structured alternative to string-based LLM add specs. Other models: `DatasetConfig`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`, `DbLoadConfig`. Topological sort (Kahn's algorithm)
 - `dataset/storage.py` - Parquet read/write via pyarrow, directory layout (`raw/<source_id>/<date>.parquet`), `MetadataStore` for `metadata.json`
 - `dataset/collector.py` - Collection orchestrator: topo-sorted execution, four source types (independent, from_file, dependent, union), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
 - `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records. `_parse_add_specs()` accepts both string format and structured `EnrichFieldSpec` objects
@@ -225,6 +227,8 @@ When releasing a new version:
 - **from_file** — batch API calls with input values from CSV/JSONL/text file (`from_file` + `file_field` + `input_key`)
 - **Dependent** — batch API calls using values extracted from a parent source's Parquet output (`dependency.from_source` + `dependency.field` + `input_key`)
 - **Union** (`type: union`) — combines records from multiple parent sources into one (`sources` list + optional `dedupe_by`). All parent sources must have the same endpoint. Useful for merging multiple search results before a single dependent source
+
+`input` is accepted as an alias for `params` (preferred in YAML configs). `refresh` supports three values: `auto` (default — skipped with `--incremental` after first run), `always` (re-fetch every run), `never` (skip if data already exists). Dependency shorthand: `${source_id.field_path}` in `input` values auto-expands to `dependency` + `input_key` (e.g., `input: { user: "${search.urn.value}" }` is equivalent to `dependency: { from_source: search, field: urn.value }` + `input_key: user`).
 
 Sources are topologically sorted by dependencies. `input_template` allows transforming extracted values before passing to API (e.g., `{type: company, value: "{value}"}`). Nested objects stored as JSON strings in Parquet are auto-parsed back when extracting with dot-notation paths.
 

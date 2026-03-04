@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -208,7 +210,7 @@ class LLMStepConfig(BaseModel):
 class _SourceBase(BaseModel):
     """Fields shared by all source types (api, llm, union)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     id: str = Field(description="Unique source identifier")
     filter: str | None = Field(
@@ -235,10 +237,18 @@ class _SourceBase(BaseModel):
         default=None,
         description="Database loading configuration (optional)",
     )
-    refresh: Literal["auto", "always"] = Field(
+    refresh: Literal["auto", "always", "never"] = Field(
         default="auto",
-        description="Refresh mode: 'auto' uses incremental caching, 'always' re-collects every run",
+        description=(
+            "Refresh mode: 'auto' uses incremental caching, "
+            "'always' re-collects every run, "
+            "'never' skips if any data already exists"
+        ),
     )
+
+
+_DEP_REF_RE = re.compile(r"^\$\{([\w][\w-]*)\.(.+)\}$")
+"""Pattern for ``${source_id.field_path}`` dependency shorthand."""
 
 
 class ApiSource(_SourceBase):
@@ -251,7 +261,11 @@ class ApiSource(_SourceBase):
     endpoint: str = Field(
         description="API endpoint path (e.g., /api/linkedin/search/users)",
     )
-    params: dict[str, Any] = Field(default_factory=dict, description="Static API parameters")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("input", "params"),
+        description="Static API parameters",
+    )
     input_key: str | None = Field(
         default=None,
         description="Parameter name for dependent input values",
@@ -271,6 +285,61 @@ class ApiSource(_SourceBase):
     parallel: int = Field(default=1, ge=1, description="Parallel requests for batch collection")
     rate_limit: str | None = Field(default=None, description="Rate limit (e.g., '10/s')")
     on_error: str = Field(default="skip", description="Error handling: stop or skip")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_dep_refs(cls, data: Any) -> Any:
+        """Expand ``${source.field}`` refs in params/input to dependency + input_key."""
+        if not isinstance(data, dict):
+            return data
+
+        # Detect conflict: both 'input' and 'params' provided
+        if "input" in data and "params" in data:
+            raise ValueError(
+                "Cannot use both 'input' and 'params' — they are aliases. "
+                "Use 'input' (preferred) or 'params', not both."
+            )
+
+        # Look in whichever key is present
+        params = data.get("input") or data.get("params")
+        if not isinstance(params, dict):
+            return data
+
+        dep_refs: list[tuple[str, str, str]] = []
+        for key, value in params.items():
+            if isinstance(value, str):
+                m = _DEP_REF_RE.match(value)
+                if m:
+                    dep_refs.append((key, m.group(1), m.group(2)))
+
+        if not dep_refs:
+            return data
+
+        if len(dep_refs) > 1:
+            refs = ", ".join(f"{k}=${{{s}.{f}}}" for k, s, f in dep_refs)
+            raise ValueError(
+                f"Only one ${{source.field}} reference allowed per source, found {len(dep_refs)}: {refs}"
+            )
+
+        param_key, source_id, field_path = dep_refs[0]
+
+        if data.get("dependency"):
+            raise ValueError(
+                f"Cannot use ${{...}} shorthand ('{param_key}: "
+                f"${{{source_id}.{field_path}}}') together with explicit "
+                f"'dependency' block — use one or the other."
+            )
+        if data.get("input_key"):
+            raise ValueError(
+                f"Cannot use ${{...}} shorthand with explicit 'input_key' — "
+                f"the param key '{param_key}' becomes the input_key automatically."
+            )
+
+        data["dependency"] = {"from_source": source_id, "field": field_path}
+        data["input_key"] = param_key
+        del params[param_key]
+
+        return data
 
     @field_validator("endpoint")
     @classmethod

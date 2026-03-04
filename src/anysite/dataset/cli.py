@@ -22,7 +22,6 @@ app = typer.Typer(
 _FIELD_RENAMES: dict[str, str] = {
     "name": "id",
     "parameters": "params",
-    "input": "params",
     "dependencies": "dependency",
     "source_type": "type",
     "output": "transform.fields (for field selection/filtering)",
@@ -228,6 +227,10 @@ def collect(
         bool,
         typer.Option("--no-llm", help="Skip LLM enrichment steps"),
     ] = False,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", "-l", help="Max input values per dependent/from_file source (for pilot runs)"),
+    ] = None,
     load_db: Annotated[
         str | None,
         typer.Option("--load-db", help="After collection, load into database (connection name)"),
@@ -286,6 +289,7 @@ def collect(
             dry_run=dry_run,
             quiet=quiet,
             no_llm=no_llm,
+            limit=limit,
         )
 
         # Handle dry-run output (plan data)
@@ -504,6 +508,13 @@ def query(
             help="Comma-separated fields to include (supports dot-notation, e.g. 'name, urn.value AS urn_id')",
         ),
     ] = None,
+    exclude: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude",
+            help="Comma-separated fields to exclude from output (e.g. '_input_value,_parent_source')",
+        ),
+    ] = None,
     source: Annotated[
         str | None,
         typer.Option("--source", "-s", help="Source to query (auto-generates SELECT query)"),
@@ -514,17 +525,25 @@ def query(
 
     from anysite.dataset.analyzer import DatasetAnalyzer, expand_dot_fields
 
+    # --fields takes precedence over --exclude
+    if fields and exclude:
+        typer.echo("Warning: --fields and --exclude are mutually exclusive; --fields takes precedence", err=True)
+        exclude = None
+
     with DatasetAnalyzer(config) as analyzer:
         if interactive:
             analyzer.interactive_shell()
             return
 
-        # Auto-generate SQL from --source + --fields
+        # Auto-generate SQL from --source + --fields/--exclude
         if source and not sql and not file:
             view_name = source.replace("-", "_").replace(".", "_")
             if fields:
                 select_expr = expand_dot_fields(fields)
                 fields = None  # Already in SQL, don't post-filter
+            elif exclude:
+                exclude_cols = ", ".join(c.strip() for c in exclude.split(","))
+                select_expr = f"* EXCLUDE ({exclude_cols})"
             else:
                 select_expr = "*"
             sql = f"SELECT {select_expr} FROM {view_name}"

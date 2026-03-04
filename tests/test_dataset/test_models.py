@@ -527,3 +527,173 @@ class TestEnrichFieldSpec:
             ],
         )
         assert len(step.add) == 2
+
+
+class TestInputAlias:
+    """Tests for 'input' as an alias for 'params'."""
+
+    def test_input_accepted(self):
+        src = ApiSource.model_validate(
+            {"id": "s", "endpoint": "/api/test", "input": {"keywords": "hello"}}
+        )
+        assert src.params == {"keywords": "hello"}
+
+    def test_input_in_yaml(self, tmp_path):
+        yaml_path = tmp_path / "dataset.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "test",
+                    "sources": [
+                        {
+                            "id": "search",
+                            "endpoint": "/api/search",
+                            "input": {"keywords": "engineer", "count": 50},
+                        }
+                    ],
+                }
+            )
+        )
+        config = DatasetConfig.from_yaml(yaml_path)
+        assert config.sources[0].params == {"keywords": "engineer", "count": 50}
+
+    def test_input_and_params_conflict(self):
+        with pytest.raises(ValueError, match="Cannot use both"):
+            ApiSource.model_validate(
+                {
+                    "id": "s",
+                    "endpoint": "/api/s",
+                    "input": {"a": 1},
+                    "params": {"b": 2},
+                }
+            )
+
+    def test_params_still_works(self):
+        src = ApiSource(id="test", endpoint="/api/test", params={"count": 10})
+        assert src.params == {"count": 10}
+
+    def test_empty_input(self):
+        src = ApiSource.model_validate(
+            {"id": "s", "endpoint": "/api/test", "input": {}}
+        )
+        assert src.params == {}
+
+
+class TestRefreshNever:
+    """Tests for refresh: never."""
+
+    def test_accepted(self):
+        src = ApiSource(id="test", endpoint="/api/test", refresh="never")
+        assert src.refresh == "never"
+
+    def test_in_yaml(self, tmp_path):
+        yaml_path = tmp_path / "dataset.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "test",
+                    "sources": [
+                        {"id": "s", "endpoint": "/api/test", "refresh": "never"}
+                    ],
+                }
+            )
+        )
+        config = DatasetConfig.from_yaml(yaml_path)
+        assert config.sources[0].refresh == "never"
+
+
+class TestDepRefShorthand:
+    """Tests for ${source.field} dependency shorthand."""
+
+    def test_basic_expansion(self):
+        config = DatasetConfig.model_validate(
+            {
+                "name": "test",
+                "sources": [
+                    {"id": "search", "endpoint": "/api/search"},
+                    {
+                        "id": "profiles",
+                        "endpoint": "/api/user",
+                        "input": {"user": "${search.urn.value}", "count": 20},
+                    },
+                ],
+            }
+        )
+        src = config.sources[1]
+        assert src.dependency is not None
+        assert src.dependency.from_source == "search"
+        assert src.dependency.field == "urn.value"
+        assert src.input_key == "user"
+        assert src.params == {"count": 20}
+
+    def test_with_params_key(self):
+        src = ApiSource.model_validate(
+            {
+                "id": "profiles",
+                "endpoint": "/api/user",
+                "params": {"user": "${search.urn.value}"},
+            }
+        )
+        assert src.dependency.from_source == "search"
+        assert src.input_key == "user"
+        assert src.params == {}
+
+    def test_multiple_refs_error(self):
+        with pytest.raises(ValueError, match="Only one"):
+            ApiSource.model_validate(
+                {
+                    "id": "x",
+                    "endpoint": "/api/x",
+                    "input": {"user": "${a.f1}", "company": "${b.f2}"},
+                }
+            )
+
+    def test_conflict_with_explicit_dependency(self):
+        with pytest.raises(ValueError, match="Cannot use"):
+            ApiSource.model_validate(
+                {
+                    "id": "x",
+                    "endpoint": "/api/x",
+                    "input": {"user": "${search.urn.value}"},
+                    "dependency": {"from_source": "search", "field": "urn.value"},
+                }
+            )
+
+    def test_conflict_with_explicit_input_key(self):
+        with pytest.raises(ValueError, match="Cannot use"):
+            ApiSource.model_validate(
+                {
+                    "id": "x",
+                    "endpoint": "/api/x",
+                    "input": {"user": "${search.urn.value}"},
+                    "input_key": "user",
+                }
+            )
+
+    def test_non_matching_passes_through(self):
+        """Values without a dot don't match the pattern."""
+        src = ApiSource.model_validate(
+            {"id": "t", "endpoint": "/api/t", "params": {"q": "${not_a_ref}"}}
+        )
+        assert src.params == {"q": "${not_a_ref}"}
+        assert src.dependency is None
+
+    def test_hyphenated_source_id(self):
+        src = ApiSource.model_validate(
+            {
+                "id": "profiles",
+                "endpoint": "/api/user",
+                "params": {"user": "${search-results.urn.value}"},
+            }
+        )
+        assert src.dependency.from_source == "search-results"
+
+    def test_deep_field_path(self):
+        src = ApiSource.model_validate(
+            {
+                "id": "p",
+                "endpoint": "/api/p",
+                "input": {"user": "${profiles.author.urn.value}"},
+            }
+        )
+        assert src.dependency.field == "author.urn.value"

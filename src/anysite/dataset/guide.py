@@ -121,7 +121,7 @@ Every dataset config has a top-level `sources:` list. Each source has a unique
 
      - id: search_results
        endpoint: /api/linkedin/search/users
-       params:
+       input:
          keywords: "software engineer"
          count: 50
 
@@ -197,14 +197,17 @@ Common fields available on all API sources:
   parallel:    int    (default: 1)   concurrent requests
   rate_limit:  str    (e.g., "10/s") rate limiting
   on_error:    str    "stop" or "skip" (default: "skip")
-  refresh:     str    "auto" or "always" (default: "auto")
+  refresh:     str    "auto", "always", or "never" (default: "auto")
+                      auto   = skip already-collected input values (incremental)
+                      always = re-collect every run regardless of cache
+                      never  = skip if any data exists (useful for stable reference data like company lists)
 """,
         examples=[
             """\
 # Minimal independent source
 - id: search
   endpoint: /api/linkedin/search/users
-  params:
+  input:
     keywords: "data scientist"
     count: 25""",
             """\
@@ -225,7 +228,7 @@ Common fields available on all API sources:
     from_source: profiles
     field: urn.value           # extracts raw ID, CLI adds urn:li:fsd_profile:
   input_key: urn
-  params:
+  input:
     count: 20
   parallel: 3""",
         ],
@@ -234,15 +237,18 @@ Common fields available on all API sources:
     # params
     # ------------------------------------------------------------------
     "params": GuideSection(
-        title="Parameters",
-        description="How to specify API parameters in source configs",
+        title="Input Parameters",
+        description="How to specify API parameters in source configs using `input` (or `params` for backward compatibility)",
         content="""\
-The `params` dict contains static API parameters sent with every request for a
+The `input` dict contains static API parameters sent with every request for a
 source. All Anysite API endpoints use POST with a JSON body.
+
+NOTE: `params` is still accepted as an alias for backward compatibility, but
+`input` is the preferred key for new configs.
 
 SIMPLE KEY-VALUE PAIRS:
 
-    params:
+    input:
       keywords: "software engineer"
       count: 50
       start: 0
@@ -250,7 +256,7 @@ SIMPLE KEY-VALUE PAIRS:
 INTEGER AND BOOLEAN VALUES:
 Values are auto-typed. Integers and booleans work directly:
 
-    params:
+    input:
       count: 100
       includeHidden: true
       start: 0
@@ -258,47 +264,47 @@ Values are auto-typed. Integers and booleans work directly:
 STRING VALUES:
 Use quotes for strings, especially those containing special characters:
 
-    params:
+    input:
       keywords: "CTO OR VP Engineering"
       location: "San Francisco Bay Area"
 
 URN SYNTAX:
 LinkedIn URNs are string identifiers used for profiles, companies, etc.:
 
-    params:
+    input:
       user: "urn:li:fsd_profile:ACoAABxxxxxxxxx"
       company: "urn:li:fsd_company:12345"
 
 JSON ARRAY PARAMETERS:
 Use YAML list syntax for array parameters:
 
-    params:
+    input:
       industries: [1, 2, 3]
       locations: ["us:84", "us:70"]
 
 NESTED OBJECT PARAMETERS:
 Use YAML dict syntax for nested objects:
 
-    params:
+    input:
       filters:
         currentCompany: ["Microsoft", "Google"]
         connectionOf: "ACoAABxxxxxxxxx"
 
-Parameters from `params` are merged with the dynamic value from `input_key`
+Parameters from `input` are merged with the dynamic value from `input_key`
 for dependent and from_file sources. The `input_key` value takes precedence
 if there is a key conflict.
 """,
         examples=[
             """\
 # Search with multiple filters
-params:
+input:
   keywords: "machine learning engineer"
   location: "San Francisco"
   count: 100
   industries: [1, 96]""",
             """\
 # Company lookup by URN
-params:
+input:
   company: "urn:li:fsd_company:1441"
   decorationId: "com.linkedin.voyager.deco.organization.web.WebFullCompany"
 """,
@@ -374,11 +380,34 @@ handles this automatically. Use `input_template` only for:
   - Adding extra static params alongside the dynamic value
   - Building nested/array payload structures the API requires
 
+SHORTHAND: ${source.field} IN INPUT:
+Instead of writing a separate `dependency` block with `from_source`, `field`,
+and `input_key`, you can use the `${source.field}` shorthand inside `input`:
+
+    # Traditional dependency syntax:
+    dependency:
+      from_source: search
+      field: urn.value
+    input_key: user
+
+    # Equivalent shorthand:
+    input:
+      user: ${search.urn.value}
+
+The shorthand `${source.field}` expands to: extract `field` from the source
+named `source` and pass it as the parameter key. You can mix shorthand
+references with static parameters:
+
+    input:
+      user: ${search.urn.value}
+      count: 20
+
 REFRESH MODES:
 Controls how dependent sources behave on incremental runs:
 
     refresh: auto      # (default) skip already-collected input values
     refresh: always    # re-collect every run regardless of cache
+    refresh: never     # skip if any data exists (useful for stable reference data)
 
 PROVENANCE TRACKING:
 Dependent source records are automatically annotated with:
@@ -491,7 +520,7 @@ Get posts from company pages. URN prefix (`company:`) is auto-added by CLI.
         field: organizational_urn.value  # extracts "1441", CLI adds "company:"
         dedupe: true
       input_key: urn
-      params:
+      input:
         count: 20
       parallel: 3
 
@@ -530,7 +559,7 @@ URN prefixes (activity:, company:, urn:li:fsd_profile:) are auto-added by CLI.
 sources:
   - id: search
     endpoint: /api/linkedin/search/users
-    params: { keywords: "CTO", count: 50 }
+    input: { keywords: "CTO", count: 50 }
   - id: profiles
     endpoint: /api/linkedin/user
     dependency: { from_source: search, field: urn.value, dedupe: true }
@@ -598,7 +627,7 @@ IMPORTANT NOTES:
 # Minimal api source (type defaults to "api")
 - id: search
   endpoint: /api/linkedin/search/users
-  params: { keywords: "engineer", count: 50 }""",
+  input: { keywords: "engineer", count: 50 }""",
             """\
 # Minimal llm source
 - id: analyzed
@@ -1273,9 +1302,13 @@ REFRESH MODES (per source):
 
     refresh: auto       # (default) use incremental caching
     refresh: always     # re-collect every run, ignore cache
+    refresh: never      # skip if any data exists (stable reference data)
 
 Use `refresh: always` for sources where data changes frequently and you want
 fresh data on every run (e.g., user activity feeds, search results).
+Use `refresh: never` for stable reference data that rarely changes (e.g.,
+company lists, static lookups) — the source is skipped entirely if any
+Parquet data already exists.
 
 RESETTING STATE:
 
@@ -1465,7 +1498,7 @@ anysite dataset validate dataset.yaml --json""",
 
     RIGHT (just use input_key, CLI adds the prefix):
       input_key: urn
-      params:
+      input:
         count: 10
 
 11. WRONG TEMPLATE SYNTAX: {{value}} INSTEAD OF {value}
@@ -1523,7 +1556,7 @@ description: Search for software engineers
 sources:
   - id: search_results
     endpoint: /api/linkedin/search/users
-    params:
+    input:
       keywords: "software engineer"
       count: 50
 storage:
@@ -1537,14 +1570,14 @@ description: Multi-source recruiting pipeline with enrichment
 sources:
   - id: search_sf
     endpoint: /api/linkedin/search/users
-    params:
+    input:
       keywords: "senior engineer"
       location: "San Francisco"
       count: 100
 
   - id: search_ny
     endpoint: /api/linkedin/search/users
-    params:
+    input:
       keywords: "senior engineer"
       location: "New York"
       count: 100
