@@ -169,6 +169,17 @@ def format_csv_output(data: list[dict[str, Any]], fields: list[str] | None = Non
     return output.getvalue()
 
 
+def _print_table(table: Table, *, no_truncate: bool = False) -> None:
+    """Print a Rich table, using an unconstrained width when no_truncate is set."""
+    if no_truncate:
+        from rich.console import Console as _Console
+
+        wide = _Console(width=2**15)
+        wide.print(table)
+    else:
+        console.print(table)
+
+
 def format_table_output(
     data: list[dict[str, Any]],
     fields: list[str] | None = None,
@@ -201,7 +212,7 @@ def format_table_output(
                 value = format_json(value, indent=False)
             table.add_row(key, str(value) if value is not None else "[dim]null[/dim]")
 
-        console.print(table)
+        _print_table(table, no_truncate=no_truncate)
         return
 
     # For multiple items, display as grid
@@ -232,7 +243,7 @@ def format_table_output(
             row.append(str(value) if value is not None else "")
         table.add_row(*row)
 
-    console.print(table)
+    _print_table(table, no_truncate=no_truncate)
 
 
 def format_output(
