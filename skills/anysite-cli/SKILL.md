@@ -150,13 +150,14 @@ anysite dataset init my-dataset
 # Creates my-dataset/dataset.yaml with template config
 ```
 
-### Five Source Types
+### Six Source Types
 
 1. **Independent** — single API call with static `input`
 2. **from_file** — batch calls iterating over input file values
 3. **Dependent** — batch calls using values extracted from a parent source
 4. **Union (type: union)** — combine records from multiple parent sources into one
 5. **LLM (type: llm)** — process parent data through LLM without API calls
+6. **SQL (type: sql)** — query a database connection, feed results into API enrichment
 
 ### Comprehensive Dataset YAML Reference
 
@@ -213,7 +214,7 @@ sources:
 
   # === TYPE 4: Union source (combine multiple sources) ===
   - id: all_search_results
-    type: union                     # Source type: api (default) | union | llm
+    type: union                     # Source type: api (default) | union | llm | sql
     sources: [search_results, search_extra]  # Parent source IDs to combine (required)
     dedupe_by: urn.value            # Optional: field path for deduplication (dot-notation)
     # NOTE: type: union cannot have endpoint, dependency, from_file, input_key, input
@@ -222,7 +223,7 @@ sources:
 
   # === TYPE 5: LLM source (process parent data without API) ===
   - id: employees_analyzed
-    type: llm                       # Source type: api (default) | union | llm
+    type: llm                       # Source type: api (default) | union | llm | sql
     dependency:
       from_source: employees
       field: name                   # Required by schema (not used for LLM sources)
@@ -252,6 +253,15 @@ sources:
         path: ./output/{{source}}-{{date}}.csv  # Templates: {{date}}, {{source}}, {{dataset}}
         format: csv                 # Format: json | jsonl | csv
     # NOTE: type: llm cannot have endpoint, from_file, input_key, input
+
+  # === TYPE 6: SQL source (query a database) ===
+  - id: billing_users
+    type: sql
+    connection: billing            # Named connection from 'anysite db add'
+    query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+    # query_file: queries/inactive.sql   # Alternative: read SQL from file
+    filter: ".email != null"       # All base fields work: filter, llm, transform, export, db_load
+    # NOTE: type: sql cannot have endpoint, from_file, input_key, input, parallel, rate_limit, on_error
 
   # === OPTIONAL BLOCKS (any source type) ===
   # THREE-LEVEL FILTERING:

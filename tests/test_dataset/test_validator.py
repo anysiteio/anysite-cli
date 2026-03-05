@@ -9,6 +9,7 @@ from anysite.dataset.models import (
     LlmSource,
     LLMStepConfig,
     SourceDependency,
+    SqlSource,
     TransformConfig,
 )
 from anysite.dataset.validator import (
@@ -532,6 +533,78 @@ class TestParamChecks:
         messages = [e.message for e in result.errors]
         assert any("conflicts with input_key" in m for m in messages)
         assert any("Jinja" in m for m in messages)
+
+
+class TestSqlSourceValidation:
+    """Tests for SQL source validation."""
+
+    def test_sql_source_valid(self):
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name FROM users",
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=NO_SCHEMA)
+        assert result.valid
+
+    def test_sql_source_not_checked_by_schema_aware(self):
+        """SQL source should not trigger endpoint validation errors."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name FROM users",
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert result.valid
+
+    def test_sql_source_filter_typo_caught(self):
+        """Filter typo (= vs ==) should be caught on SQL sources too."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name FROM users",
+                    filter=".status = 'active'",
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=NO_SCHEMA)
+        assert not result.valid
+        assert "sources[0].filter" in result.errors[0].location
+        assert "==" in result.errors[0].message
+
+    def test_sql_source_query_file_warning(self):
+        """Missing query_file should produce a warning."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query_file="nonexistent/query.sql",
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=NO_SCHEMA)
+        assert result.valid  # warning, not error
+        assert len(result.warnings) == 1
+        assert "query_file" in result.warnings[0]
 
 
 class TestFindSimilar:

@@ -111,10 +111,10 @@ anysite dataset collect dataset.yaml --dry-run""",
     # ------------------------------------------------------------------
     "sources": GuideSection(
         title="Source Types",
-        description="The five types of data sources you can define in a dataset pipeline",
+        description="The six types of data sources you can define in a dataset pipeline",
         content="""\
 Every dataset config has a top-level `sources:` list. Each source has a unique
-`id` and an optional `type` field (default: "api"). The five source types are:
+`id` and an optional `type` field (default: "api"). The six source types are:
 
 1. INDEPENDENT (type: api, no dependency, no from_file)
    Makes a single API call with static parameters.
@@ -189,6 +189,23 @@ Every dataset config has a top-level `sources:` list. Each source has a unique
            fields: [headline, about]
            output_column: job_status
 
+6. SQL (type: sql)
+   Runs a SQL query against a named database connection (defined with
+   'anysite db add'). Returns query results as records. Other sources
+   can depend on SQL sources to extract values for batch API calls.
+
+     - id: billing_users
+       type: sql
+       connection: billing
+       query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+
+   Use query_file for long queries stored externally:
+
+     - id: billing_data
+       type: sql
+       connection: billing
+       query_file: queries/inactive.sql
+
 Sources are automatically topologically sorted by dependencies (Kahn's
 algorithm), so you can list them in any order in the YAML file. Independent
 and from_file sources run first, followed by dependent sources in order.
@@ -201,6 +218,8 @@ Common fields available on all API sources:
                       auto   = skip already-collected input values (incremental)
                       always = re-collect every run regardless of cache
                       never  = skip if any data exists (useful for stable reference data like company lists)
+
+NOTE: SQL sources share refresh but not parallel/rate_limit/on_error (single query).
 """,
         examples=[
             """\
@@ -584,7 +603,7 @@ sources:
         title="Required Fields by Source Type",
         description="Which fields are required, optional, or unavailable for each source type",
         content="""\
-Three source types have different field requirements:
+Four source types have different field requirements:
 
 TYPE: API (default — type can be omitted)
   Required:  id, endpoint
@@ -604,6 +623,12 @@ TYPE: UNION (type: union)
              db_load, refresh
   N/A:       endpoint, params, input_key, input_template, from_file,
              file_field, parallel, rate_limit, on_error
+
+TYPE: SQL (type: sql)
+  Required:  id, type: sql, connection, query or query_file
+  Optional:  filter, llm, transform, export, db_load, refresh, dependency
+  N/A:       endpoint, params, input_key, input_template, from_file,
+             file_field, parallel, rate_limit, on_error, sources, dedupe_by
 
 DEFAULTS:
   parallel:          1
@@ -1718,6 +1743,34 @@ sources:
 storage:
   format: parquet
   path: ./data/content-analysis/
+  partition_by: [source_id, collected_date]""",
+    # ------------------------------------------------------------------
+    "sql_enrichment": """\
+name: sql-enrichment
+description: Query billing DB and enrich with LinkedIn profiles
+sources:
+  - id: inactive_subscribers
+    type: sql
+    connection: billing
+    query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+
+  - id: profiles
+    endpoint: /api/linkedin/search/users
+    dependency:
+      from_source: inactive_subscribers
+      field: name
+    input_key: keywords
+    parallel: 3
+    db_load:
+      table: enriched_subscribers
+      fields:
+        - name
+        - headline
+        - "urn.value AS linkedin_urn"
+
+storage:
+  format: parquet
+  path: ./data/sql-enrichment/
   partition_by: [source_id, collected_date]""",
     # ------------------------------------------------------------------
     "filter_levels": """\

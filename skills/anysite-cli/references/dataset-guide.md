@@ -92,7 +92,7 @@ notifications:                 # Webhook notifications
     - url: "https://alerts.example.com/fail"
 ```
 
-### Five Source Types
+### Six Source Types
 
 **Independent** — single API call with static input:
 ```yaml
@@ -168,6 +168,20 @@ All parent sources must have the same endpoint. Records are annotated with `_uni
 - **Run with**: `anysite dataset collect dataset.yaml --source profiles_analyzed`
 
 The LLM source reads the parent's Parquet data directly, applies LLM steps, and writes enriched records to its own Parquet file. This allows re-analyzing data with different prompts or categories without re-collecting from the API.
+
+**SQL (type: sql)** — query a named database connection:
+```yaml
+- id: billing_users
+  type: sql
+  connection: billing
+  query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+```
+Runs the query and stores results as records. Downstream sources can depend on SQL output. Uses connections from `anysite db add`. Supports `query_file` for external `.sql` files.
+
+**type: sql source rules:**
+- **Requires**: `connection` and either `query` or `query_file`
+- **Cannot have**: `endpoint`, `from_file`, `input_key`, `input`, `parallel`, `rate_limit`, `on_error`
+- **Use case**: Bring external DB data into the pipeline for API enrichment
 
 ### Dependency Chains
 
@@ -279,24 +293,27 @@ The `${source.field}` syntax extracts the source ID and field path automatically
 
 ### Required Fields by Source Type
 
-| Field | `api` (default) | `llm` | `union` |
-|-------|-----------------|-------|---------|
-| `id` | required | required | required |
-| `type` | optional (defaults to "api") | required: `llm` | required: `union` |
-| `endpoint` | required | N/A | N/A |
-| `dependency` | optional | **required** | N/A |
-| `llm` | optional | **required** (>= 1 step) | optional |
-| `sources` | N/A | N/A | **required** |
-| `input` | optional | N/A | N/A |
-| `input_key` | optional | N/A | N/A |
-| `input_template` | optional | N/A | N/A |
-| `from_file` | optional | N/A | N/A |
-| `parallel` | optional (default: 1) | N/A | N/A |
-| `filter` | optional | optional | optional |
-| `transform` | optional | optional | optional |
-| `export` | optional | optional | optional |
-| `db_load` | optional | optional | optional |
-| `dedupe_by` | N/A | N/A | optional |
+| Field | `api` (default) | `llm` | `union` | `sql` |
+|-------|-----------------|-------|---------|-------|
+| `id` | required | required | required | required |
+| `type` | optional (defaults to "api") | required: `llm` | required: `union` | required: `sql` |
+| `endpoint` | required | N/A | N/A | N/A |
+| `connection` | N/A | N/A | N/A | **required** |
+| `query` | N/A | N/A | N/A | required (or `query_file`) |
+| `query_file` | N/A | N/A | N/A | required (or `query`) |
+| `dependency` | optional | **required** | N/A | optional |
+| `llm` | optional | **required** (>= 1 step) | optional | optional |
+| `sources` | N/A | N/A | **required** | N/A |
+| `input` | optional | N/A | N/A | N/A |
+| `input_key` | optional | N/A | N/A | N/A |
+| `input_template` | optional | N/A | N/A | N/A |
+| `from_file` | optional | N/A | N/A | N/A |
+| `parallel` | optional (default: 1) | N/A | N/A | N/A |
+| `filter` | optional | optional | optional | optional |
+| `transform` | optional | optional | optional | optional |
+| `export` | optional | optional | optional | optional |
+| `db_load` | optional | optional | optional | optional |
+| `dedupe_by` | N/A | N/A | optional | N/A |
 
 **Key notes:**
 - `dependency.field` is optional (not required) — needed for value extraction but not for LLM sources

@@ -15,7 +15,14 @@ from anysite.batch.executor import BatchExecutor
 from anysite.batch.rate_limiter import RateLimiter
 from anysite.cli.options import ErrorHandling
 from anysite.dataset.errors import DatasetError
-from anysite.dataset.models import ApiSource, DatasetConfig, DatasetSource, LlmSource, UnionSource
+from anysite.dataset.models import (
+    ApiSource,
+    DatasetConfig,
+    DatasetSource,
+    LlmSource,
+    SqlSource,
+    UnionSource,
+)
 from anysite.dataset.storage import (
     MetadataStore,
     get_parquet_path,
@@ -253,6 +260,8 @@ async def _collect_source(
             print_info(f"Collecting {source.id} (union of {', '.join(source.sources)})...")
         elif isinstance(source, LlmSource):
             print_info(f"Collecting {source.id} (LLM processing)...")
+        elif isinstance(source, SqlSource):
+            print_info(f"Collecting {source.id} (SQL query on {source.connection})...")
         else:
             print_info(f"Collecting {source.id} from {source.endpoint}...")
 
@@ -260,6 +269,8 @@ async def _collect_source(
         records = await _collect_union(source, base_path, quiet=quiet)
     elif isinstance(source, LlmSource):
         records = await _collect_llm(source, base_path, quiet=quiet)
+    elif isinstance(source, SqlSource):
+        records = await _collect_sql(source, config_dir=config_dir, quiet=quiet)
     elif isinstance(source, ApiSource) and source.from_file is not None:
         file_base = config_dir if config_dir else Path.cwd()
         records = await _collect_from_file(
@@ -613,6 +624,36 @@ async def _collect_llm(
     return records
 
 
+async def _collect_sql(
+    source: SqlSource,
+    *,
+    config_dir: Path,
+    quiet: bool = False,
+) -> list[dict[str, Any]]:
+    """Collect records by running a SQL query against a named database connection."""
+    from anysite.db.manager import ConnectionManager
+
+    manager = ConnectionManager()
+    adapter = manager.get_adapter_by_name(source.connection)
+
+    query = source.query
+    if source.query_file:
+        query_path = Path(source.query_file)
+        if not query_path.is_absolute():
+            query_path = config_dir / query_path
+        if not query_path.exists():
+            raise DatasetError(f"SQL file not found: {query_path}")
+        query = query_path.read_text().strip()
+
+    with adapter:
+        rows = adapter.fetch_all(query)
+
+    if not quiet and rows:
+        print_info(f"  SQL query returned {len(rows)} rows")
+
+    return rows or []
+
+
 async def _collect_dependent(
     source: ApiSource,
     base_path: Path,
@@ -840,6 +881,19 @@ def _build_plan(
                 kind="llm",
                 dependency=source.dependency.from_source if source.dependency else None,
                 estimated_requests=est,
+                refresh=source.refresh,
+                llm_steps=llm_steps,
+            )
+        elif isinstance(source, SqlSource):
+            plan.add_step(
+                source_id=source.id,
+                endpoint=None,
+                kind="sql",
+                params={
+                    "connection": source.connection,
+                    "query": (source.query or source.query_file or "")[:80],
+                },
+                estimated_requests=1,
                 refresh=source.refresh,
                 llm_steps=llm_steps,
             )

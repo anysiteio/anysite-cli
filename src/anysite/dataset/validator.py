@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from anysite.dataset.models import ApiSource, DatasetConfig, EnrichFieldSpec
+from anysite.dataset.models import ApiSource, DatasetConfig, EnrichFieldSpec, SqlSource
 
 
 @dataclass
@@ -141,6 +141,15 @@ def validate_dataset_config(
                         f"sources[{i}]: from_file '{source.from_file}' "
                         f"not found (may be relative to config dir)"
                     )
+
+        # SQL source checks
+        if isinstance(source, SqlSource) and source.query_file:
+            qf = Path(source.query_file)
+            if not qf.is_absolute() and not qf.exists():
+                result.warnings.append(
+                    f"sources[{i}]: query_file '{source.query_file}' "
+                    f"not found (may be relative to config dir)"
+                )
 
     # 5. Schema-aware checks
     if schema_cache is None:

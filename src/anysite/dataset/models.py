@@ -208,7 +208,7 @@ class LLMStepConfig(BaseModel):
 
 
 class _SourceBase(BaseModel):
-    """Fields shared by all source types (api, llm, union)."""
+    """Fields shared by all source types (api, llm, union, sql)."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -380,6 +380,33 @@ class UnionSource(_SourceBase):
     )
 
 
+class SqlSource(_SourceBase):
+    """SQL query source — runs a query against a named database connection."""
+
+    type: Literal["sql"] = Field(
+        description="Source type: 'sql' for database query",
+    )
+    connection: str = Field(
+        description="Named database connection (from 'anysite db add')",
+    )
+    query: str | None = Field(
+        default=None,
+        description="SQL SELECT query to execute",
+    )
+    query_file: str | None = Field(
+        default=None,
+        description="Path to a .sql file containing the query",
+    )
+
+    @model_validator(mode="after")
+    def validate_query_source(self) -> SqlSource:
+        if not self.query and not self.query_file:
+            raise ValueError("SQL source requires either 'query' or 'query_file'")
+        if self.query and self.query_file:
+            raise ValueError("SQL source cannot have both 'query' and 'query_file' — use one")
+        return self
+
+
 def _source_discriminator(v: Any) -> str:
     """Determine source type for discriminated union.
 
@@ -393,10 +420,11 @@ def _source_discriminator(v: Any) -> str:
 DatasetSource = Annotated[
     Annotated[ApiSource, Tag("api")]
     | Annotated[LlmSource, Tag("llm")]
-    | Annotated[UnionSource, Tag("union")],
+    | Annotated[UnionSource, Tag("union")]
+    | Annotated[SqlSource, Tag("sql")],
     Discriminator(_source_discriminator),
 ]
-"""A dataset source — discriminated union of ApiSource, LlmSource, UnionSource."""
+"""A dataset source — discriminated union of ApiSource, LlmSource, UnionSource, SqlSource."""
 
 
 # ---------------------------------------------------------------------------
@@ -432,8 +460,8 @@ class DatasetConfig(BaseModel):
     @field_validator("sources")
     @classmethod
     def validate_unique_ids(
-        cls, v: list[ApiSource | LlmSource | UnionSource],
-    ) -> list[ApiSource | LlmSource | UnionSource]:
+        cls, v: list[ApiSource | LlmSource | UnionSource | SqlSource],
+    ) -> list[ApiSource | LlmSource | UnionSource | SqlSource]:
         ids = [s.id for s in v]
         dupes = [sid for sid in ids if ids.count(sid) > 1]
         if dupes:
@@ -469,14 +497,14 @@ class DatasetConfig(BaseModel):
         config._config_dir = path.resolve().parent
         return config
 
-    def get_source(self, source_id: str) -> ApiSource | LlmSource | UnionSource | None:
+    def get_source(self, source_id: str) -> ApiSource | LlmSource | UnionSource | SqlSource | None:
         """Get a source by ID."""
         for s in self.sources:
             if s.id == source_id:
                 return s
         return None
 
-    def topological_sort(self) -> list[ApiSource | LlmSource | UnionSource]:
+    def topological_sort(self) -> list[ApiSource | LlmSource | UnionSource | SqlSource]:
         """Sort sources by dependency order using Kahn's algorithm.
 
         Returns:
@@ -513,7 +541,7 @@ class DatasetConfig(BaseModel):
             if degree == 0:
                 queue.append(sid)
 
-        result: list[ApiSource | LlmSource | UnionSource] = []
+        result: list[ApiSource | LlmSource | UnionSource | SqlSource] = []
         while queue:
             sid = queue.popleft()
             result.append(source_map[sid])

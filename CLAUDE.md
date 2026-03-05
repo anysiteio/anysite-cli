@@ -169,9 +169,9 @@ When releasing a new version:
 - `utils/fields.py` - Field selection with dot notation, array wildcards, built-in presets (minimal, contact, recruiting)
 - `utils/retry.py` - RetryConfig and retry logic
 - `dataset/__init__.py` - `check_data_deps()` — verifies optional duckdb/pyarrow are installed
-- `dataset/models.py` - Pydantic models for dataset YAML config. `DatasetSource` is a discriminated union of `ApiSource`, `LlmSource`, `UnionSource` (with `_SourceBase` shared fields), selected by `_source_discriminator()` (defaults to `"api"`). `ApiSource.params` accepts `input` as a validation alias (preferred in YAML configs). `EnrichFieldSpec` provides structured alternative to string-based LLM add specs. Other models: `DatasetConfig`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`, `DbLoadConfig`. Topological sort (Kahn's algorithm)
+- `dataset/models.py` - Pydantic models for dataset YAML config. `DatasetSource` is a discriminated union of `ApiSource`, `LlmSource`, `UnionSource`, `SqlSource` (with `_SourceBase` shared fields), selected by `_source_discriminator()` (defaults to `"api"`). `ApiSource.params` accepts `input` as a validation alias (preferred in YAML configs). `EnrichFieldSpec` provides structured alternative to string-based LLM add specs. Other models: `DatasetConfig`, `SourceDependency`, `StorageConfig`, `TransformConfig`, `ExportDestination`, `LLMStepConfig`, `ScheduleConfig`, `NotificationsConfig`, `WebhookNotification`, `DbLoadConfig`. Topological sort (Kahn's algorithm)
 - `dataset/storage.py` - Parquet read/write via pyarrow, directory layout (`raw/<source_id>/<date>.parquet`), `MetadataStore` for `metadata.json`
-- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, four source types (independent, from_file, dependent, union), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
+- `dataset/collector.py` - Collection orchestrator: topo-sorted execution, five source types (independent, from_file, dependent, union, sql), per-source LLM enrichment/transform/export, run history, notifications. Uses `BatchExecutor` + `AnysiteClient`. Supports `--no-llm` to skip LLM steps
 - `dataset/llm_enrichment.py` - LLM enrichment bridge: applies per-source LLM steps (enrich, classify, summarize, generate) after API collection, before Parquet write. Builds StructuredSchema from step config, dispatches to LLMProcessor, merges results into records. `_parse_add_specs()` accepts both string format and structured `EnrichFieldSpec` objects
 - `dataset/analyzer.py` - DuckDB analytics: SQL query, column stats, profile, interactive shell. Registers views over Parquet files
 - `dataset/transformer.py` - `RecordTransformer`: safe filter parser (no `eval()`), field selection with dot-notation/aliases, static column injection. Public `parse_filter()` function used by collector, db_loader, and RecordTransformer. `validate_filter()` returns error messages without raising (used by validator). Filter diagnostics detect common typos (`=` -> `==`, `&&` -> `and`, `||` -> `or`). Filter syntax: `.field > 10`, `.status == "active"`, `.active == true`, `and`/`or`
@@ -224,11 +224,12 @@ When releasing a new version:
 
 **Dataset Subsystem** (`anysite dataset`): Multi-source data collection, Parquet storage, DuckDB analytics, relational DB loading, per-source transforms/exports, run history, scheduling, and webhook notifications. Optional — requires `pip install anysite-cli[data]`. Registered in `main.py` via try/except ImportError.
 
-**Dataset YAML Config**: Declarative multi-source pipelines. Four source types:
+**Dataset YAML Config**: Declarative multi-source pipelines. Five source types:
 - **Independent** — single API call with `params`
 - **from_file** — batch API calls with input values from CSV/JSONL/text file (`from_file` + `file_field` + `input_key`)
 - **Dependent** — batch API calls using values extracted from a parent source's Parquet output (`dependency.from_source` + `dependency.field` + `input_key`)
 - **Union** (`type: union`) — combines records from multiple parent sources into one (`sources` list + optional `dedupe_by`). All parent sources must have the same endpoint. Useful for merging multiple search results before a single dependent source
+- **SQL** (`type: sql`) — runs a SQL query against a named database connection (`connection` + `query` or `query_file`). Downstream sources can depend on SQL output
 
 `input` is accepted as an alias for `params` (preferred in YAML configs). `refresh` supports three values: `auto` (default — skipped with `--incremental` after first run), `always` (re-fetch every run), `never` (skip if data already exists). Dependency shorthand: `${source_id.field_path}` in `input` values auto-expands to `dependency` + `input_key` (e.g., `input: { user: "${search.urn.value}" }` is equivalent to `dependency: { from_source: search, field: urn.value }` + `input_key: user`).
 

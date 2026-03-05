@@ -13,6 +13,7 @@ from anysite.dataset.models import (
     LLMStepConfig,
     LlmSource,
     SourceDependency,
+    SqlSource,
     StorageConfig,
     UnionSource,
 )
@@ -697,3 +698,105 @@ class TestDepRefShorthand:
             }
         )
         assert src.dependency.field == "author.urn.value"
+
+
+class TestSqlSource:
+    """Tests for SqlSource type."""
+
+    def test_sql_source_valid_with_query(self):
+        src = SqlSource(
+            id="billing",
+            type="sql",
+            connection="billing_db",
+            query="SELECT name, email FROM subscriptions WHERE status = 'inactive'",
+        )
+        assert src.type == "sql"
+        assert src.connection == "billing_db"
+        assert src.query is not None
+        assert src.query_file is None
+
+    def test_sql_source_valid_with_query_file(self):
+        src = SqlSource(
+            id="billing",
+            type="sql",
+            connection="billing_db",
+            query_file="queries/inactive.sql",
+        )
+        assert src.query is None
+        assert src.query_file == "queries/inactive.sql"
+
+    def test_sql_source_requires_query_or_file(self):
+        with pytest.raises(ValueError, match="requires either 'query' or 'query_file'"):
+            SqlSource(
+                id="billing",
+                type="sql",
+                connection="billing_db",
+            )
+
+    def test_sql_source_rejects_both(self):
+        with pytest.raises(ValueError, match="cannot have both"):
+            SqlSource(
+                id="billing",
+                type="sql",
+                connection="billing_db",
+                query="SELECT 1",
+                query_file="query.sql",
+            )
+
+    def test_sql_source_inherits_base_fields(self):
+        src = SqlSource(
+            id="billing",
+            type="sql",
+            connection="billing_db",
+            query="SELECT 1",
+            filter=".email != null",
+            refresh="always",
+        )
+        assert src.filter == ".email != null"
+        assert src.refresh == "always"
+
+    def test_sql_source_topo_sort_as_root(self):
+        """SQL source as root, API source depends on it."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="db",
+                    query="SELECT name FROM users",
+                ),
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/search/users",
+                    dependency=SourceDependency(from_source="billing", field="name"),
+                    input_key="keywords",
+                ),
+            ],
+        )
+        ordered = config.topological_sort()
+        ids = [s.id for s in ordered]
+        assert ids.index("billing") < ids.index("profiles")
+
+    def test_sql_source_yaml_roundtrip(self, tmp_path):
+        yaml_content = {
+            "name": "sql-test",
+            "sources": [
+                {
+                    "id": "billing",
+                    "type": "sql",
+                    "connection": "billing_db",
+                    "query": "SELECT name FROM users",
+                },
+            ],
+        }
+        yaml_path = tmp_path / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        config = DatasetConfig.from_yaml(yaml_path)
+        assert len(config.sources) == 1
+        src = config.sources[0]
+        assert isinstance(src, SqlSource)
+        assert src.connection == "billing_db"
+        assert src.query == "SELECT name FROM users"

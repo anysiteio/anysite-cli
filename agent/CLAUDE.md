@@ -283,6 +283,24 @@ storage:
   path: ./data/
 ```
 
+### SQL → API Enrichment
+Query a database, then enrich each row via API.
+```yaml
+sources:
+  - id: inactive_users
+    type: sql
+    connection: billing
+    query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+  - id: profiles
+    endpoint: /api/linkedin/search/users
+    dependency: { from_source: inactive_users, field: name }
+    input_key: keywords
+    parallel: 3
+storage:
+  format: parquet
+  path: ./data/
+```
+
 ### Collect + LLM Analysis
 Collect data, then analyze with LLM in the same pipeline.
 ```yaml

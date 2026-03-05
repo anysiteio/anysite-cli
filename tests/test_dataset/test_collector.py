@@ -1,7 +1,7 @@
 """Tests for dataset collector with mocked API."""
 
 from datetime import date
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,7 @@ from anysite.dataset.models import (
     LLMStepConfig,
     LlmSource,
     SourceDependency,
+    SqlSource,
     UnionSource,
 )
 from anysite.dataset.storage import read_parquet, write_parquet
@@ -1364,3 +1365,142 @@ class TestSourceErrorHandling:
         assert results["src_a"] == 0
         assert results["src_b"] == 1
         assert results["src_c"] == 1
+
+
+class TestCollectSql:
+    """Tests for SQL source collection."""
+
+    async def test_sql_source_returns_rows(self, tmp_path):
+        """SQL source collects rows via fetch_all."""
+        config = DatasetConfig(
+            name="sql-test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name, email FROM users",
+                ),
+            ],
+            storage={"path": str(tmp_path / "data")},
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.__enter__ = MagicMock(return_value=mock_adapter)
+        mock_adapter.__exit__ = MagicMock(return_value=None)
+        mock_adapter.fetch_all.return_value = [
+            {"name": "Alice", "email": "alice@example.com"},
+            {"name": "Bob", "email": "bob@example.com"},
+        ]
+
+        mock_manager = MagicMock()
+        mock_manager.get_adapter_by_name.return_value = mock_adapter
+
+        with patch("anysite.db.manager.ConnectionManager", return_value=mock_manager):
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["billing"] == 2
+        mock_manager.get_adapter_by_name.assert_called_once_with("testdb")
+        mock_adapter.fetch_all.assert_called_once_with("SELECT name, email FROM users")
+
+    async def test_sql_source_with_query_file(self, tmp_path):
+        """SQL source reads query from file."""
+        sql_file = tmp_path / "query.sql"
+        sql_file.write_text("SELECT name FROM users WHERE active = true")
+
+        config = DatasetConfig(
+            name="sql-test",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query_file=str(sql_file),
+                ),
+            ],
+            storage={"path": str(tmp_path / "data")},
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.__enter__ = MagicMock(return_value=mock_adapter)
+        mock_adapter.__exit__ = MagicMock(return_value=None)
+        mock_adapter.fetch_all.return_value = [{"name": "Alice"}]
+
+        mock_manager = MagicMock()
+        mock_manager.get_adapter_by_name.return_value = mock_adapter
+
+        with patch("anysite.db.manager.ConnectionManager", return_value=mock_manager):
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["billing"] == 1
+        mock_adapter.fetch_all.assert_called_once_with(
+            "SELECT name FROM users WHERE active = true"
+        )
+
+    async def test_sql_to_api_chain(self, tmp_path):
+        """SQL source feeds dependent API source."""
+        config = DatasetConfig(
+            name="sql-chain",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name FROM users",
+                ),
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/search/users",
+                    dependency=SourceDependency(from_source="billing", field="name"),
+                    input_key="keywords",
+                ),
+            ],
+            storage={"path": str(tmp_path / "data")},
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.__enter__ = MagicMock(return_value=mock_adapter)
+        mock_adapter.__exit__ = MagicMock(return_value=None)
+        mock_adapter.fetch_all.return_value = [
+            {"name": "Alice"},
+            {"name": "Bob"},
+        ]
+
+        mock_manager = MagicMock()
+        mock_manager.get_adapter_by_name.return_value = mock_adapter
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=[{"urn": "urn:1", "name": "Result"}])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("anysite.db.manager.ConnectionManager", return_value=mock_manager),
+            patch("anysite.dataset.collector.create_client", return_value=mock_client),
+        ):
+            results = await collect_dataset(config, quiet=True)
+
+        assert results["billing"] == 2
+        assert results["profiles"] == 2  # one API call per name
+
+    async def test_sql_source_dry_run(self, tmp_path):
+        """Dry run shows SQL source in plan."""
+        config = DatasetConfig(
+            name="sql-plan",
+            sources=[
+                SqlSource(
+                    id="billing",
+                    type="sql",
+                    connection="testdb",
+                    query="SELECT name FROM users",
+                ),
+            ],
+            storage={"path": str(tmp_path / "data")},
+        )
+
+        results = await collect_dataset(config, dry_run=True, quiet=True)
+        plan_steps = results["_plan"]
+        assert len(plan_steps) == 1
+        assert plan_steps[0]["kind"] == "sql"
+        assert plan_steps[0]["estimated_requests"] == 1
+        assert plan_steps[0]["params"]["connection"] == "testdb"
