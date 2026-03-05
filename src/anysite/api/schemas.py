@@ -551,7 +551,10 @@ def convert_value(value: str, type_hint: str) -> str | int | bool | float | list
                 return parsed
         except json.JSONDecodeError:
             pass
-        return value
+        # Comma-separated → list, or single value → [value]
+        if "," in value:
+            return [v.strip() for v in value.split(",")]
+        return [value]
     # Auto-detect JSON arrays/objects even without type hint
     if value.startswith("[") or value.startswith("{"):
         try:

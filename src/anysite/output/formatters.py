@@ -31,6 +31,7 @@ class OutputFormat(str, Enum):
     JSONL = "jsonl"
     CSV = "csv"
     TABLE = "table"
+    PARQUET = "parquet"
 
 
 def filter_fields(data: dict[str, Any], fields: list[str]) -> dict[str, Any]:
@@ -293,6 +294,12 @@ def format_output(
             format_table_output(data, fields, no_truncate=no_truncate)
         return
 
+    if output_format == OutputFormat.PARQUET:
+        if not output_file:
+            raise ValueError("--format parquet requires --output <path>")
+        format_parquet_output(data, output_file, quiet=quiet)
+        return
+
     if output_format == OutputFormat.JSON:
         formatted = format_json(data, indent=not compact)
     elif output_format == OutputFormat.JSONL:
@@ -303,6 +310,47 @@ def format_output(
         formatted = format_json(data, indent=not compact)
 
     _write_output(formatted, output_file, quiet, append=append)
+
+
+def format_parquet_output(
+    data: list[dict[str, Any]],
+    output_file: Path,
+    *,
+    quiet: bool = False,
+) -> None:
+    """Write data as a Parquet file.
+
+    Requires pyarrow (installed with ``pip install anysite-cli[data]``).
+    """
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError:
+        raise ImportError(
+            "Parquet output requires pyarrow. Install with: pip install anysite-cli[data]"
+        ) from None
+
+    output_file = _expand_output_path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(data)
+    pq.write_table(table, output_file)
+    if not quiet:
+        from anysite.output.console import print_success
+
+        print_success(f"Output saved to {output_file} ({len(data)} rows)")
+
+
+def _expand_output_path(path: Path) -> Path:
+    """Expand ``{{date}}`` and ``{{datetime}}`` templates in output paths."""
+    s = str(path)
+    if "{{" not in s:
+        return path
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    s = s.replace("{{date}}", now.strftime("%Y-%m-%d"))
+    s = s.replace("{{datetime}}", now.strftime("%Y-%m-%dT%H%M%S"))
+    return Path(s)
 
 
 def _write_output(
@@ -320,6 +368,8 @@ def _write_output(
         append: Append to existing file
     """
     if output_file:
+        output_file = _expand_output_path(output_file)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if append else "w"
         with open(output_file, mode, encoding="utf-8") as f:
             f.write(content)

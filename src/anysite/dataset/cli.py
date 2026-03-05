@@ -495,7 +495,7 @@ def query(
     ] = False,
     format: Annotated[
         str,
-        typer.Option("--format", help="Output format (json/jsonl/csv/table)"),
+        typer.Option("--format", help="Output format (json/jsonl/csv/table/parquet)"),
     ] = "table",
     output: Annotated[
         Path | None,
@@ -583,7 +583,7 @@ def stats(
     ] = None,
     format: Annotated[
         str,
-        typer.Option("--format", help="Output format (json/jsonl/csv/table)"),
+        typer.Option("--format", help="Output format (json/jsonl/csv/table/parquet)"),
     ] = "table",
     output: Annotated[
         Path | None,
@@ -621,7 +621,7 @@ def profile(
     ],
     format: Annotated[
         str,
-        typer.Option("--format", help="Output format (json/jsonl/csv/table)"),
+        typer.Option("--format", help="Output format (json/jsonl/csv/table/parquet)"),
     ] = "table",
     output: Annotated[
         Path | None,
@@ -1587,7 +1587,7 @@ def _output_results(
     try:
         fmt = OutputFormat(format.lower())
     except ValueError:
-        typer.echo(f"Error: invalid format '{format}', use json/jsonl/csv/table", err=True)
+        typer.echo(f"Error: invalid format '{format}', use json/jsonl/csv/table/parquet", err=True)
         raise typer.Exit(1) from None
 
     include_fields = parse_fields(fields)

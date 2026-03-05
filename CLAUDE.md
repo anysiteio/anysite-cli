@@ -108,6 +108,8 @@ anysite db schema mydb
 anysite db schema mydb --table users
 anysite db insert mydb --table users --stdin --auto-create
 anysite db query mydb --sql "SELECT * FROM users LIMIT 10" --format table
+anysite db query mydb --sql "SELECT * FROM users" --format parquet --output users.parquet
+anysite db query mydb --sql "SELECT * FROM users" --format csv --output "reports/{{date}}/users.csv"
 anysite db upsert mydb --table users --conflict-columns id --stdin
 anysite db discover mydb
 anysite db discover mydb --with-llm

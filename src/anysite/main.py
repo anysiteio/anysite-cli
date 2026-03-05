@@ -580,7 +580,7 @@ def api_call(
     try:
         fmt = OutputFormat(format.lower())
     except ValueError:
-        typer.echo(f"Error: invalid format '{format}', use json/jsonl/csv/table", err=True)
+        typer.echo(f"Error: invalid format '{format}', use json/jsonl/csv/table/parquet", err=True)
         raise typer.Exit(1) from None
 
     # Resolve error handling enum

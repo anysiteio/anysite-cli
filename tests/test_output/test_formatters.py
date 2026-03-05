@@ -3,16 +3,21 @@
 import datetime
 import json
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from anysite.output.formatters import (
     OutputFormat,
+    _expand_output_path,
     filter_fields,
     flatten_for_csv,
     format_csv_output,
     format_json,
     format_jsonl,
+    format_output,
+    format_parquet_output,
     format_table_output,
 )
 
@@ -196,3 +201,65 @@ class TestTableNoTruncate:
         data = [{"email": "test@example.com"}]
         format_table_output(data, no_truncate=False)
         # age should not be in header if we properly implement field filtering
+
+
+class TestFormatParquet:
+    """Tests for --format parquet output."""
+
+    def test_format_parquet_writes_file(self, tmp_path):
+        import pyarrow.parquet as pq
+
+        data = [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]
+        out = tmp_path / "test.parquet"
+        format_parquet_output(data, out, quiet=True)
+        assert out.exists()
+        table = pq.read_table(out)
+        assert table.num_rows == 2
+        assert table.column_names == ["name", "age"]
+
+    def test_format_parquet_requires_output_file(self):
+        data = [{"x": 1}]
+        with pytest.raises(ValueError, match="requires --output"):
+            format_output(data, OutputFormat.PARQUET, output_file=None)
+
+    def test_format_parquet_creates_parent_dirs(self, tmp_path):
+        import pyarrow.parquet as pq
+
+        data = [{"val": 42}]
+        out = tmp_path / "a" / "b" / "data.parquet"
+        format_parquet_output(data, out, quiet=True)
+        assert out.exists()
+        table = pq.read_table(out)
+        assert table.num_rows == 1
+
+
+class TestExpandOutputPath:
+    """Tests for {{date}} / {{datetime}} template expansion in --output."""
+
+    def test_date_expansion(self):
+        p = Path("/tmp/{{date}}/data.json")
+        result = _expand_output_path(p)
+        # Should be YYYY-MM-DD format
+        name = result.parent.name
+        assert len(name) == 10
+        assert name[4] == "-" and name[7] == "-"
+
+    def test_datetime_expansion(self):
+        p = Path("/tmp/{{datetime}}_report.csv")
+        result = _expand_output_path(p)
+        assert "{{datetime}}" not in str(result)
+        assert "T" in result.name  # ISO-ish timestamp
+
+    def test_no_template_passthrough(self):
+        p = Path("/tmp/plain/output.json")
+        assert _expand_output_path(p) == p
+
+    def test_write_output_expands_templates(self, tmp_path):
+        """End-to-end: format_output with {{date}} in path creates dated dir."""
+        data = [{"x": 1}]
+        out = tmp_path / "{{date}}" / "test.json"
+        format_output(data, OutputFormat.JSON, output_file=out, quiet=True)
+        # The {{date}} dir should have been expanded
+        children = list(tmp_path.iterdir())
+        assert len(children) == 1
+        assert "{{date}}" not in children[0].name

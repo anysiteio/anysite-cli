@@ -456,6 +456,8 @@ anysite db test pg
 # Data operations
 cat data.jsonl | anysite db insert pg --table users --stdin --auto-create
 anysite db query pg --sql "SELECT * FROM users" --format table
+anysite db query pg --sql "SELECT * FROM users" --format parquet --output users.parquet
+anysite db query pg --sql "SELECT * FROM users" --format csv --output "reports/{{date}}/users.csv"
 
 # Pipe API output to database
 anysite api /api/linkedin/user user=satyanadella -q --format jsonl \
@@ -506,7 +508,8 @@ Use `anysite describe --search <keyword>` for more endpoints.
 
 ## Key Patterns
 
-- **Output formats**: `--format json|jsonl|csv|table`
+- **Output formats**: `--format json|jsonl|csv|table|parquet` (parquet requires `--output`)
+- **Array params**: `keywords=a,b,c` auto-wraps as `["a","b","c"]`
 - **Field selection**: `--fields "name,headline,urn.value"` (dot-notation for nested)
 - **Error handling**: `--on-error stop|skip|retry`
 - **Config priority**: CLI args > ENV vars > `~/.anysite/config.yaml` > defaults

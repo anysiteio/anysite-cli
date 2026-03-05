@@ -190,6 +190,7 @@ anysite dataset stats dataset.yaml --source profiles   # Column statistics
 **Match delivery format to the need:**
 - Quick answer → summarize in conversation
 - Spreadsheet → `--format csv --output results.csv`
+- Parquet → `--format parquet --output reports/{{date}}/data.parquet`
 - Visual table → `--format table`
 - Database → `--load-db <connection>`
 

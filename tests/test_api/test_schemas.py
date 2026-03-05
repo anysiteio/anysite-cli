@@ -1,6 +1,6 @@
-"""Tests for URN auto-normalization utilities in schemas module."""
+"""Tests for URN auto-normalization and value conversion in schemas module."""
 
-from anysite.api.schemas import _extract_urn_example, get_urn_prefix, normalize_urn_value
+from anysite.api.schemas import _extract_urn_example, convert_value, get_urn_prefix, normalize_urn_value
 
 
 class TestExtractUrnExample:
@@ -123,3 +123,35 @@ class TestNormalizeUrnValue:
 
     def test_empty_value(self):
         assert normalize_urn_value("", "activity:") == "activity:"
+
+
+class TestConvertValue:
+    """Tests for convert_value array auto-wrapping."""
+
+    def test_convert_value_array_single(self):
+        """Single string with array type_hint is auto-wrapped in a list."""
+        result = convert_value("fuzzy.so", "array[string]")
+        assert result == ["fuzzy.so"]
+
+    def test_convert_value_array_comma(self):
+        """Comma-separated string with array type_hint is split into a list."""
+        result = convert_value("a,b,c", "array")
+        assert result == ["a", "b", "c"]
+
+    def test_convert_value_array_comma_with_spaces(self):
+        result = convert_value("a, b, c", "array[string]")
+        assert result == ["a", "b", "c"]
+
+    def test_convert_value_array_json_preserved(self):
+        """Existing JSON array syntax still works."""
+        result = convert_value('["a","b"]', "array")
+        assert result == ["a", "b"]
+
+    def test_convert_value_integer(self):
+        assert convert_value("42", "integer") == 42
+
+    def test_convert_value_boolean(self):
+        assert convert_value("true", "boolean") is True
+
+    def test_convert_value_string(self):
+        assert convert_value("hello", "string") == "hello"
