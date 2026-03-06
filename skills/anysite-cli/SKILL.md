@@ -44,8 +44,9 @@ This prevents errors from wrong endpoint paths, missing required parameters, or 
 Before any data collection task:
 
 ```bash
-# 1. Check CLI is available
+# 1. Check CLI is available and see latest changes
 anysite --version
+anysite changelog --last 1 --json            # Check what's new in this version
 # If not found: source .venv/bin/activate or pip install anysite-cli
 
 # 2. Update schema cache (required for endpoint discovery)
@@ -55,6 +56,8 @@ anysite schema update
 anysite config get api_key
 # If not set: anysite config set api_key sk-xxxxx
 ```
+
+After upgrading, run `anysite changelog --since <old_version> --json` to discover new features.
 
 ## Endpoint Discovery
 

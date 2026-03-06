@@ -119,15 +119,32 @@ anysite db catalog
 anysite db catalog mydb
 anysite db catalog mydb --table users
 anysite db catalog mydb --json
+
+# Changelog commands
+anysite changelog                              # all releases, human-readable
+anysite changelog --json                       # all releases, JSON for agents
+anysite changelog --since 0.3.16 --json        # changes after 0.3.16
+anysite changelog --last 1 --json              # latest release only
 ```
+
+## Changelog Rule (MANDATORY)
+
+**Every commit that adds features, fixes bugs, or changes behavior MUST include a corresponding update to `src/anysite/changelog.py`.** This is not optional — agents rely on the changelog to discover new capabilities after upgrades.
+
+- Add a `Change(category=..., summary=...)` to the current version's `ChangeEntry` in `CHANGELOG`
+- If bumping the version, create a new `ChangeEntry` at the top of the `CHANGELOG` list
+- Categories: `"added"` (new feature), `"changed"` (behavior change), `"fixed"` (bug fix), `"removed"` (removed feature)
+- Include `detail` for significant features, `example` for YAML/command snippets
+- Keep summaries concise (one line) — agents parse them programmatically
 
 ## Release Process
 
 When releasing a new version:
 
-1. **Update version in TWO places:**
+1. **Update version in THREE places:**
    - `pyproject.toml` — `version = "X.Y.Z"`
    - `src/anysite/__init__.py` — `__version__ = "X.Y.Z"`
+   - `src/anysite/changelog.py` — add a new `ChangeEntry` at the top of `CHANGELOG` list with all changes since the last release
 
 2. **Build and publish:**
    ```bash
@@ -137,7 +154,7 @@ When releasing a new version:
 
 3. **Commit and push:**
    ```bash
-   git add pyproject.toml src/anysite/__init__.py
+   git add pyproject.toml src/anysite/__init__.py src/anysite/changelog.py
    git commit -m "Bump version to X.Y.Z"
    git push origin main
    ```
@@ -153,7 +170,8 @@ When releasing a new version:
 - `cli/options.py` - Reusable Typer option type aliases (FormatOption, FieldsOption, etc.) and `ErrorHandling` enum
 - `cli/exit_codes.py` - Standard exit codes: `EXIT_SUCCESS` (0), `EXIT_ERROR` (1), `EXIT_USAGE` (2), `EXIT_AUTH` (3), `EXIT_NOT_FOUND` (4), `EXIT_NETWORK` (5)
 - `cli/json_output.py` - `json_response()`, `json_error()`, `json_error_from_exception()`, `resolve_json_output()`, `print_hints()`, `is_non_interactive()`: structured JSON envelope output with auto-detection of pipe/TTY
-- `cli/discovery.py` - `build_discovery_payload()`: introspects Typer app to produce JSON discovery payload with commands, protocol, exit codes, and installed extras
+- `cli/discovery.py` - `build_discovery_payload()`: introspects Typer app to produce JSON discovery payload with commands, protocol, exit codes, installed extras, and `whats_new` from changelog
+- `changelog.py` - Structured changelog for agent discovery. `CHANGELOG` list of `ChangeEntry` objects (newest first). `whats_new_payload()` for discovery integration. `get_changelog_since()` for filtered queries. Used by `anysite changelog` command
 - `api/client.py` - Async HTTP client (`AnysiteClient`) with retry logic, exponential backoff, auth via `access-token` header
 - `api/errors.py` - Exception hierarchy (AuthenticationError, RateLimitError, NotFoundError, ValidationError, ServerError, NetworkError, TimeoutError). Each has `error_code`, `exit_code`, `retryable`, `suggestions`, and `to_dict()` for structured JSON error output
 - `api/schemas.py` - OpenAPI schema cache: fetch spec, resolve `$ref`, extract input/output, search/list endpoints, auto-convert CLI arg types. `_extract_properties()` recursively expands nested objects/arrays with dot-notation keys (e.g., `urn.value`, `experience[].title`) up to `max_depth=3`
@@ -304,7 +322,8 @@ All three levels use the same safe expression syntax: `.field op value` with `an
 - Hints: every command returns next-step hints as `(action, command)` tuples, rendered in JSON envelope or dim text on stderr
 - `--human` global flag forces human-readable output even in pipes
 - `--non-interactive` disables interactive prompts (auto-enabled when stdin is not a TTY)
-- Discovery payload: `anysite` with no subcommand in a pipe returns a JSON payload listing all commands, protocol, exit codes, and installed extras via `build_discovery_payload()`
+- Discovery payload: `anysite` with no subcommand in a pipe returns a JSON payload listing all commands, protocol, exit codes, installed extras, and `whats_new` (latest release highlights) via `build_discovery_payload()`
+- Changelog: `anysite changelog --json` returns structured release history. `anysite changelog --since <version> --json` shows only changes after a specific version. Discovery payload includes `whats_new` key with latest release highlights
 
 ## Common CLI Options Pattern
 

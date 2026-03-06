@@ -53,6 +53,11 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
         "Authenticate with Anysite via OAuth2 browser flow or API key. "
         "Check status, login, and logout."
     ),
+    "changelog": (
+        "Show what changed in recent CLI releases. "
+        "Use --since <version> to see changes after a specific version. "
+        "Agents should check this after upgrading to discover new features."
+    ),
 }
 
 # ── Curated examples and tips for Level 2 ───────────────────────────────────
@@ -302,6 +307,16 @@ COMMAND_EXAMPLES: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "changelog": {
+        "tips": [
+            "Run 'anysite changelog --since <old_version> --json' after upgrading to see what's new.",
+        ],
+        "examples": [
+            "anysite changelog --json",
+            "anysite changelog --since 0.3.16 --json",
+            "anysite changelog --last 1 --json",
+        ],
+    },
 }
 
 
@@ -382,6 +397,7 @@ def build_discovery_payload(ctx: Any) -> dict[str, Any]:
                 "4": "not_found",
                 "5": "network",
             },
+            "whats_new": _whats_new(),
             "commands": _discover_commands_compact(ctx),
             "installed_extras": _discover_installed_extras(),
         },
@@ -739,6 +755,19 @@ def _serialize_params(cmd: Any) -> list[dict[str, Any]] | None:
         result.append(entry)
 
     return result or None
+
+
+# ── What's new ────────────────────────────────────────────────────────────────
+
+
+def _whats_new() -> dict[str, Any] | None:
+    """Compact summary of the latest release for discovery payload."""
+    try:
+        from anysite.changelog import whats_new_payload
+
+        return whats_new_payload()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── Installed extras ─────────────────────────────────────────────────────────

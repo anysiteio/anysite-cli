@@ -53,6 +53,16 @@ anysite CLI auto-detects when called from a pipe/subprocess (non-TTY) and return
 
 Use `--json` to force JSON in a terminal. Use `--human` to force human-readable output in pipes.
 
+### Feature Discovery
+
+After upgrading anysite-cli, check what's new:
+```bash
+anysite changelog --since <previous_version> --json  # Changes since last known version
+anysite changelog --last 1 --json                    # Latest release highlights
+```
+
+The discovery payload (`echo '' | anysite`) also includes a `whats_new` key with the latest release highlights.
+
 ## Workflow
 
 ### 1. Understand the Data Need

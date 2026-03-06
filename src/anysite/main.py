@@ -643,6 +643,74 @@ def api_call(
         )
 
 
+@app.command("changelog")
+def changelog_cmd(
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Show changes since this version (exclusive)"),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output as JSON (for agents)"),
+    ] = False,
+    last: Annotated[
+        int,
+        typer.Option("--last", "-n", help="Show only the last N releases"),
+    ] = 0,
+) -> None:
+    """Show what changed in recent releases.
+
+    Agents can use this after upgrading to discover new features.
+
+    \b
+    Examples:
+      anysite changelog                    # all releases, human-readable
+      anysite changelog --json             # all releases, JSON for agents
+      anysite changelog --since 0.3.15     # changes after 0.3.15
+      anysite changelog --last 1 --json    # latest release only
+    """
+    from anysite.changelog import get_changelog_since
+    from anysite.cli.json_output import resolve_json_output
+
+    json_output = resolve_json_output(json_output)
+
+    entries = get_changelog_since(since)
+    if last > 0:
+        entries = entries[:last]
+
+    if json_output:
+        from anysite.cli.json_output import json_response
+
+        json_response(
+            {"releases": [e.to_dict() for e in entries]},
+            hints=[
+                ("Full guide", "anysite dataset guide"),
+                ("Validate config", "anysite dataset validate dataset.yaml"),
+            ],
+            command="anysite changelog",
+        )
+        return
+
+    console = Console()
+    if not entries:
+        console.print("[dim]No changelog entries found.[/dim]")
+        raise typer.Exit(0)
+
+    for entry in entries:
+        console.print(f"\n[bold]v{entry.version}[/bold]  [dim]({entry.date})[/dim]")
+        for change in entry.changes:
+            cat_style = {
+                "added": "green",
+                "changed": "yellow",
+                "fixed": "cyan",
+                "removed": "red",
+            }.get(change.category, "white")
+            console.print(f"  [{cat_style}]{change.category}[/{cat_style}]  {change.summary}")
+            if change.detail:
+                console.print(f"         [dim]{change.detail}[/dim]")
+    console.print()
+
+
 def get_api_key() -> str | None:
     """Get API key with priority: CLI flag > env var > OAuth token > config file."""
     # 1. CLI --api-key flag
