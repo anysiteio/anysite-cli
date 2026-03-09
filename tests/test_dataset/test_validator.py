@@ -178,6 +178,9 @@ MOCK_SCHEMA = {
                 "urn.type": "string",
                 "urn.value": "string",
                 "headline": "string",
+                "experience": "array[object]",
+                "experience[].company": "object",
+                "experience[].position": "string",
             },
         },
         "/api/linkedin/user/posts": {
@@ -408,6 +411,112 @@ class TestSchemaAwareValidation:
         )
         result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
         assert result.valid
+
+    def test_dependency_field_deep_nested_warning(self):
+        """Deep nested path beyond schema depth produces warning, not error."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/user",
+                    params={"user": "test"},
+                ),
+                ApiSource(
+                    id="companies",
+                    endpoint="/api/linkedin/user/posts",
+                    input_key="urn",
+                    params={"count": 10},
+                    dependency=SourceDependency(
+                        from_source="profiles",
+                        field="experience[0].company.urn.value",
+                    ),
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert result.valid  # no errors
+        assert any("beyond schema depth" in w for w in result.warnings)
+
+    def test_dependency_field_bare_dot_through_array(self):
+        """Bare dot-notation through array field (no []) produces warning, not error."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/user",
+                    params={"user": "test"},
+                ),
+                ApiSource(
+                    id="companies",
+                    endpoint="/api/linkedin/user/posts",
+                    input_key="urn",
+                    params={"count": 10},
+                    dependency=SourceDependency(
+                        from_source="profiles",
+                        field="experience.company.urn.value",
+                    ),
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert result.valid  # no errors
+        assert any("beyond schema depth" in w for w in result.warnings)
+
+    def test_dependency_field_bare_dot_exact_match(self):
+        """Bare dot path that matches schema key (after stripping []) passes."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/user",
+                    params={"user": "test"},
+                ),
+                ApiSource(
+                    id="positions",
+                    endpoint="/api/linkedin/user/posts",
+                    input_key="urn",
+                    params={"count": 10},
+                    dependency=SourceDependency(
+                        from_source="profiles",
+                        field="experience.position",
+                    ),
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert result.valid
+        # Exact match (bare maps to experience[].position) — no warning needed
+        assert not any("beyond schema depth" in w for w in result.warnings)
+
+    def test_dependency_field_deep_nested_no_prefix_errors(self):
+        """Deep nested path with no valid object prefix still errors."""
+        config = DatasetConfig(
+            name="test",
+            sources=[
+                ApiSource(
+                    id="profiles",
+                    endpoint="/api/linkedin/user",
+                    params={"user": "test"},
+                ),
+                ApiSource(
+                    id="companies",
+                    endpoint="/api/linkedin/user/posts",
+                    input_key="urn",
+                    params={"count": 10},
+                    dependency=SourceDependency(
+                        from_source="profiles",
+                        field="xperience[0].foo",
+                    ),
+                ),
+            ],
+        )
+        result = validate_dataset_config(config, schema_cache=MOCK_SCHEMA)
+        assert not result.valid
+        err = [e for e in result.errors if "dependency.field" in e.location][0]
+        assert "xperience[0].foo" in err.message
 
     def test_non_api_sources_skipped(self):
         """LlmSource should not trigger endpoint checks."""

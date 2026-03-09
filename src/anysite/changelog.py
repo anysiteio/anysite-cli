@@ -49,9 +49,32 @@ class Change:
 
 CHANGELOG: list[ChangeEntry] = [
     ChangeEntry(
+        version="0.3.20",
+        date="2026-03-10",
+        changes=[
+            Change(
+                category="added",
+                summary="Implicit array traversal in dependency.field extraction",
+                detail=(
+                    "Dot-notation paths like 'current_companies.company.urn.value' now "
+                    "automatically traverse array elements. No need for [0] or [*] syntax — "
+                    "all values from all elements are collected and flattened."
+                ),
+            ),
+            Change(
+                category="fixed",
+                summary="Validator allows deep nested dependency.field paths beyond schema depth",
+            ),
+        ],
+    ),
+    ChangeEntry(
         version="0.3.19",
         date="2026-03-09",
         changes=[
+            Change(
+                category="fixed",
+                summary="Search matches compound words (e.g. 'webpage' finds 'web' + 'page')",
+            ),
             Change(
                 category="added",
                 summary="Usage instructions in describe --search results",

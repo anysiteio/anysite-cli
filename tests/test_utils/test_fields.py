@@ -2,6 +2,7 @@
 
 from anysite.utils.fields import (
     exclude_fields,
+    extract_field,
     filter_fields,
     parse_field_path,
     resolve_fields_preset,
@@ -37,6 +38,79 @@ class TestParseFieldPath:
     def test_complex_path(self):
         result = parse_field_path("experience[0].company.name")
         assert len(result) == 4
+
+
+class TestExtractFieldImplicitArray:
+    """Test implicit array traversal in extract_field."""
+
+    def test_bare_dot_through_array(self):
+        """current_companies.company.urn.value extracts from array elements."""
+        data = {
+            "current_companies": [
+                {"company": {"urn": {"type": "company", "value": "104237466"}}},
+                {"company": {"urn": {"type": "company", "value": "999888"}}},
+            ],
+        }
+        segments = parse_field_path("current_companies.company.urn.value")
+        result = extract_field(data, segments)
+        assert result == ["104237466", "999888"]
+
+    def test_single_element_array(self):
+        data = {
+            "items": [{"id": "abc"}],
+        }
+        segments = parse_field_path("items.id")
+        result = extract_field(data, segments)
+        assert result == ["abc"]
+
+    def test_nested_arrays(self):
+        """Array inside array — both traversed implicitly."""
+        data = {
+            "groups": [
+                {"members": [{"name": "A"}, {"name": "B"}]},
+                {"members": [{"name": "C"}]},
+            ],
+        }
+        segments = parse_field_path("groups.members.name")
+        result = extract_field(data, segments)
+        assert result == ["A", "B", "C"]
+
+    def test_missing_key_in_some_elements(self):
+        """Elements without the key are skipped (no Nones)."""
+        data = {
+            "items": [
+                {"id": "1"},
+                {"other": "x"},
+                {"id": "3"},
+            ],
+        }
+        segments = parse_field_path("items.id")
+        result = extract_field(data, segments)
+        assert result == ["1", "3"]
+
+    def test_empty_array_returns_none(self):
+        data = {"items": []}
+        segments = parse_field_path("items.id")
+        result = extract_field(data, segments)
+        assert result is None
+
+    def test_explicit_index_still_works(self):
+        """[0] syntax should still return a single value, not a list."""
+        data = {
+            "items": [{"id": "first"}, {"id": "second"}],
+        }
+        segments = parse_field_path("items[0].id")
+        result = extract_field(data, segments)
+        assert result == "first"
+
+    def test_explicit_wildcard_still_works(self):
+        """[*] syntax should still work as before."""
+        data = {
+            "items": [{"id": "a"}, {"id": "b"}],
+        }
+        segments = parse_field_path("items[*].id")
+        result = extract_field(data, segments)
+        assert result == ["a", "b"]
 
 
 class TestFilterFields:

@@ -67,6 +67,19 @@ def extract_field(data: Any, segments: list[FieldPath]) -> Any:
         if segment.type == "key":
             if isinstance(current, dict):
                 current = current.get(segment.value)  # type: ignore[arg-type]
+            elif isinstance(current, list):
+                # Implicit array traversal — dive into each element
+                remaining = segments[i:]  # include current "key" segment
+                results = [extract_field(item, remaining) for item in current]
+                flat: list[Any] = []
+                for r in results:
+                    if r is None:
+                        continue
+                    if isinstance(r, list):
+                        flat.extend(r)
+                    else:
+                        flat.append(r)
+                return flat if flat else None
             else:
                 return None
 

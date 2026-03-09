@@ -5,12 +5,14 @@ from unittest.mock import patch
 import pytest
 
 from anysite.api.graph import (
+    _compound_matches,
     _detect_input_id_type,
     _extract_keywords,
     _infer_produces,
     _learn_linkedin_entity_types,
     _resolve_urn_literal,
     _singularize,
+    _word_matches,
     build_graph,
     get_endpoint_connections,
     load_graph_cache,
@@ -329,6 +331,29 @@ class TestSearchGraph:
         assert "matches" in result["usage"]
         assert "chaining" in result["usage"]
 
+    def test_compound_word_match(self):
+        """'webpage' matches endpoint with 'web' and 'page' as separate words."""
+        spec = _make_spec(
+            paths={
+                "/api/webparser/parse": {
+                    "post": _make_endpoint(
+                        "ParseInput",
+                        description="Parse and clean HTML from web page",
+                    ),
+                },
+            },
+            schemas={
+                "ParseInput": {
+                    "properties": {"url": {"type": "string"}},
+                    "required": ["url"],
+                },
+            },
+        )
+        graph = build_graph(spec)
+        result = search_graph("webpage", graph)
+        paths = [m["path"] for m in result["matches"]]
+        assert "/api/webparser/parse" in paths
+
     def test_auto_loads_cache(self):
         graph_data = build_graph(MINIMAL_SPEC)
         with patch("anysite.api.graph.load_graph_cache", return_value=graph_data):
@@ -418,3 +443,48 @@ class TestFallbackSearch:
         ):
             result = search_graph("user")
             assert result["matches"] == []
+
+    def test_fallback_compound_match(self):
+        mock_cache = {
+            "endpoints": {
+                "/api/webparser/parse": {
+                    "description": "Parse and clean HTML from web page",
+                    "tags": ["web"],
+                },
+                "/api/linkedin/user": {"description": "Get profile", "tags": ["linkedin"]},
+            }
+        }
+        with (
+            patch("anysite.api.graph.load_graph_cache", return_value=None),
+            patch("anysite.api.schemas.load_cache", return_value=mock_cache),
+        ):
+            result = search_graph("webpage")
+            paths = [m["path"] for m in result["matches"]]
+            assert "/api/webparser/parse" in paths
+
+
+# ── Compound matching tests ──────────────────────────────────────────────────
+
+
+class TestCompoundMatching:
+    def test_compound_matches_webpage(self):
+        assert _compound_matches("webpage", "web page parser") is True
+
+    def test_compound_matches_linkedinuser(self):
+        assert _compound_matches("linkedinuser", "linkedin user posts") is True
+
+    def test_compound_no_match(self):
+        assert _compound_matches("foobar", "hello world") is False
+
+    def test_compound_too_short(self):
+        # Single char halves should not be tried
+        assert _compound_matches("ab", "a b") is False
+
+    def test_word_matches_exact(self):
+        assert _word_matches("user", "linkedin user posts") is True
+
+    def test_word_matches_compound(self):
+        assert _word_matches("webpage", "web page parser") is True
+
+    def test_word_matches_neither(self):
+        assert _word_matches("foobar", "hello world") is False

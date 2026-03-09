@@ -6,6 +6,7 @@ Checks dependency graph, filter expressions, LLM add specs, and schema-aware che
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -245,20 +246,65 @@ def _validate_schema_aware(
                 if parent_info:
                     parent_output = parent_info.get("output", {})
                     dep_field = source.dependency.field
-                    if dep_field not in parent_output:
-                        similar = _find_similar(dep_field, list(parent_output.keys()))
-                        msg = (
-                            f"dependency.field '{dep_field}' not found in "
-                            f"{parent.endpoint} output"
-                        )
-                        if similar:
-                            msg += f". Similar: {', '.join(similar)}"
-                        result.errors.append(
-                            ValidationError(
-                                location=f"sources[{i}].dependency.field",
-                                message=msg,
+                    normalized = re.sub(r"\[\d+\]", "[]", dep_field)
+                    # Also try bare form (strip []) for implicit array paths
+                    bare = normalized.replace("[]", "")
+                    bare_output = {
+                        k.replace("[]", ""): v for k, v in parent_output.items()
+                    }
+                    if (
+                        normalized not in parent_output
+                        and bare not in bare_output
+                    ):
+                        if _has_object_prefix(normalized, parent_output):
+                            result.warnings.append(
+                                f"sources[{i}].dependency.field: '{dep_field}' extends "
+                                f"beyond schema depth — will be resolved at runtime"
                             )
-                        )
+                        else:
+                            similar = _find_similar(
+                                dep_field, list(parent_output.keys())
+                            )
+                            msg = (
+                                f"dependency.field '{dep_field}' not found in "
+                                f"{parent.endpoint} output"
+                            )
+                            if similar:
+                                msg += f". Similar: {', '.join(similar)}"
+                            result.errors.append(
+                                ValidationError(
+                                    location=f"sources[{i}].dependency.field",
+                                    message=msg,
+                                )
+                            )
+
+
+def _has_object_prefix(field: str, output: dict[str, str]) -> bool:
+    """Check if a prefix of field exists in output as an unexpanded object type.
+
+    Only returns True when the prefix key has no children in the schema —
+    meaning the schema truncated expansion at that depth.  If children exist,
+    the schema *did* expand the object, so a miss is a genuine mismatch.
+
+    Comparisons strip ``[]`` markers so that bare dot-notation paths
+    (e.g. ``companies.name``) match schema keys with array markers
+    (e.g. ``companies[].name``).
+    """
+    field_bare = field.replace("[]", "")
+    for key, type_str in output.items():
+        if "object" not in type_str:
+            continue
+        key_bare = key.replace("[]", "")
+        if not field_bare.startswith(key_bare + "."):
+            continue
+        # Check whether this key was expanded (has children in the schema)
+        has_children = any(
+            k != key and k.replace("[]", "").startswith(key_bare + ".")
+            for k in output
+        )
+        if not has_children:
+            return True
+    return False
 
 
 def _find_similar(target: str, candidates: list[str], max_results: int = 3) -> list[str]:

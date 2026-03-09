@@ -39,6 +39,19 @@ def _singularize(word: str) -> str:
     return word
 
 
+def _compound_matches(word: str, searchable: str) -> bool:
+    """Try splitting word into two halves that both appear in searchable."""
+    for i in range(2, len(word) - 1):
+        if word[:i] in searchable and word[i:] in searchable:
+            return True
+    return False
+
+
+def _word_matches(word: str, searchable: str) -> bool:
+    """Check if word matches via exact substring or compound split."""
+    return word in searchable or _compound_matches(word, searchable)
+
+
 def _split_camel(name: str) -> list[str]:
     """Split CamelCase into lowercase words: LinkedinUserPost -> ['linkedin', 'user', 'post']."""
     parts = re.findall(r"[A-Z][a-z]*|[a-z]+", name)
@@ -522,6 +535,9 @@ def search_graph(
                     score += 2
                 if w in node["id"].lower():
                     score += 1
+            elif _compound_matches(w, searchable):
+                matched_words += 1
+                score += 0.5
         if matched_words == len(query_words):
             matches[node_id] = {**node, "_score": score}
 
@@ -629,7 +645,7 @@ def _fallback_search(query: str) -> dict[str, Any]:
         description = info.get("description", "")
         tags = " ".join(info.get("tags", []))
         searchable = f"{path} {description} {tags}".lower()
-        if all(w in searchable for w in query_words):
+        if all(_word_matches(w, searchable) for w in query_words):
             matches.append({
                 "path": path,
                 "description": description.split("\n")[0],
