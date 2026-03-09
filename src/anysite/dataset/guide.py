@@ -62,12 +62,11 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
 Follow these steps when building a new dataset pipeline:
 
 STEP 1 — DISCOVER ENDPOINT FIELDS:
-Run `anysite describe <endpoint>` to see input parameters (with examples,
-defaults) and output fields (with nested structure). This tells you:
-  - What parameters the endpoint expects (input_key, params)
-  - What fields are in the output for dependency extraction (field)
+Run `anysite describe --search "<keyword>"` to find endpoints with upstream
+and downstream dependencies. Then inspect specific endpoints:
 
-    anysite describe /api/linkedin/user/posts
+    anysite describe --search "linkedin posts"   # Find endpoints + dependencies
+    anysite describe /api/linkedin/user/posts     # Input params + output fields + connections
     anysite describe /api/linkedin/user/posts --json
 
 STEP 2 — DRAFT YAML CONFIG:

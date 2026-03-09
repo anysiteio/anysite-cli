@@ -249,24 +249,33 @@ def extract_endpoint_info(
     }
 
 
-def fetch_and_parse_openapi(url: str | None = None) -> dict[str, Any]:
-    """Fetch the OpenAPI spec and parse all endpoints into a compact cache format.
+def fetch_raw_openapi_spec(url: str | None = None) -> dict[str, Any]:
+    """Fetch raw OpenAPI spec from URL.
 
     Args:
         url: OpenAPI spec URL. Defaults to OPENAPI_URL.
 
     Returns:
-        Cache dict with version, updated_at, and endpoints.
+        The full spec dict.
     """
     spec_url = url or OPENAPI_URL
     response = httpx.get(spec_url, timeout=30, follow_redirects=True)
     response.raise_for_status()
-    spec = response.json()
+    return response.json()  # type: ignore[no-any-return]
 
+
+def parse_openapi_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Parse raw spec into compact cache format.
+
+    Args:
+        spec: Full OpenAPI spec dict.
+
+    Returns:
+        Cache dict with version, updated_at, and endpoints.
+    """
     endpoints: dict[str, Any] = {}
 
     for path, path_data in spec.get("paths", {}).items():
-        # Only process POST endpoints (API pattern)
         for method in ("post", "get"):
             if method not in path_data:
                 continue
@@ -275,7 +284,6 @@ def fetch_and_parse_openapi(url: str | None = None) -> dict[str, Any]:
                 info = extract_endpoint_info(spec, method_data)
                 endpoints[path] = info
             except (KeyError, TypeError):
-                # Skip endpoints that can't be parsed
                 continue
 
     return {
@@ -283,6 +291,21 @@ def fetch_and_parse_openapi(url: str | None = None) -> dict[str, Any]:
         "updated_at": datetime.now(UTC).isoformat(),
         "endpoints": endpoints,
     }
+
+
+def fetch_and_parse_openapi(url: str | None = None) -> dict[str, Any]:
+    """Fetch the OpenAPI spec and parse all endpoints into a compact cache format.
+
+    Convenience wrapper that calls ``fetch_raw_openapi_spec`` then
+    ``parse_openapi_spec``.
+
+    Args:
+        url: OpenAPI spec URL. Defaults to OPENAPI_URL.
+
+    Returns:
+        Cache dict with version, updated_at, and endpoints.
+    """
+    return parse_openapi_spec(fetch_raw_openapi_spec(url))
 
 
 def save_cache(data: dict[str, Any]) -> Path:
@@ -355,110 +378,6 @@ def get_schema(command: str) -> dict[str, Any] | None:
             return ep_data  # type: ignore[no-any-return]
 
     return None
-
-
-_SYNONYMS: dict[str, list[str]] = {
-    "profile": ["user", "person", "people"],
-    "user": ["profile", "person", "people"],
-    "person": ["user", "profile", "people"],
-    "people": ["user", "person", "profile", "search"],
-    "company": ["organization", "business", "employer"],
-    "organization": ["company", "business"],
-    "job": ["career", "position", "vacancy", "hiring"],
-    "career": ["job", "position"],
-    "post": ["article", "content", "publication"],
-    "article": ["post", "content"],
-    "search": ["find", "lookup", "discover"],
-    "find": ["search", "lookup"],
-    "comment": ["reply", "response"],
-    "follower": ["connection", "subscriber"],
-    "connection": ["follower", "contact"],
-}
-"""Common synonyms for endpoint search — maps query words to alternatives."""
-
-
-def search_endpoints(query: str) -> list[dict[str, Any]]:
-    """Search endpoints by keyword in path, description, or tags.
-
-    Args:
-        query: Search string.
-
-    Returns:
-        List of dicts with path, description, tags.
-    """
-    cache = load_cache()
-    if cache is None:
-        return []
-
-    query_lower = query.lower()
-    results = []
-
-    for path, info in cache.get("endpoints", {}).items():
-        description = info.get("description", "")
-        tags = " ".join(info.get("tags", []))
-        searchable = f"{path} {description} {tags}".lower()
-
-        if _matches_query(query_lower, searchable):
-            results.append({
-                "path": path,
-                "description": description,
-                "tags": info.get("tags", []),
-            })
-
-    return results
-
-
-def _matches_query(query: str, searchable: str) -> bool:
-    """Check if query matches searchable text.
-
-    Supports exact substring match, prefix-word matching
-    (e.g., "company" matches "companies"), and synonym expansion
-    (e.g., "profile" also tries "user").
-    """
-    # Fast path: exact substring
-    if query in searchable:
-        return True
-
-    # Split searchable into tokens (by / _ - and whitespace)
-    import re
-
-    tokens = re.split(r"[/\s_-]+", searchable)
-    query_words = query.split()
-
-    # Every query word (or one of its synonyms) must match a token
-    return all(_word_or_synonym_matches(word, tokens) for word in query_words)
-
-
-def _word_or_synonym_matches(word: str, tokens: list[str]) -> bool:
-    """Check if a word or any of its synonyms matches a token."""
-    if _word_matches_any(word, tokens):
-        return True
-    return any(_word_matches_any(syn, tokens) for syn in _SYNONYMS.get(word, []))
-
-
-def _word_matches_any(word: str, tokens: list[str]) -> bool:
-    """Check if a query word matches any token via shared prefix.
-
-    Rules:
-    - Exact prefix match in either direction (always matches)
-    - Stem match: shared prefix must be >= 80% of the shorter word
-      ("company"/"companies" share "compan" = 6/7 = 86% → match)
-    """
-    for token in tokens:
-        if not token or len(token) < 3:
-            continue
-        if token.startswith(word) or word.startswith(token):
-            return True
-        # Shared prefix ratio — catches plural/verb forms
-        common = 0
-        for a, b in zip(word, token, strict=False):
-            if a != b:
-                break
-            common += 1
-        shorter = min(len(word), len(token))
-        if shorter >= 4 and common / shorter >= 0.8:
-            return True
-    return False
 
 
 def list_endpoints() -> list[dict[str, Any]]:

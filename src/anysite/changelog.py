@@ -49,6 +49,51 @@ class Change:
 
 CHANGELOG: list[ChangeEntry] = [
     ChangeEntry(
+        version="0.3.19",
+        date="2026-03-09",
+        changes=[
+            Change(
+                category="added",
+                summary="Usage instructions in describe --search results",
+                detail=(
+                    "Search results now include a `usage` key with concise instructions "
+                    "explaining how to interpret matches, upstream, downstream, chaining, "
+                    "and next steps. Makes search output self-documenting for agents."
+                ),
+            ),
+            Change(
+                category="added",
+                summary="Graph-based endpoint dependency search in describe --search",
+                detail=(
+                    "Search now returns matched endpoints plus upstream providers "
+                    "and downstream consumers. Shows which endpoints produce IDs that "
+                    "other endpoints need, enabling automatic pipeline discovery."
+                ),
+                example='anysite describe --search "linkedin comments"',
+            ),
+            Change(
+                category="added",
+                summary="Endpoint connections in single endpoint describe",
+                detail=(
+                    "anysite describe <endpoint> now shows upstream and downstream "
+                    "connections when graph cache is available."
+                ),
+            ),
+            Change(
+                category="changed",
+                summary="schema update now builds dependency graph alongside schema cache",
+                detail=(
+                    "anysite schema update fetches the spec once, builds both schema.json "
+                    "and graph.json. Graph enables dependency-aware search."
+                ),
+            ),
+            Change(
+                category="removed",
+                summary="Removed synonym-based keyword search (replaced by graph search)",
+            ),
+        ],
+    ),
+    ChangeEntry(
         version="0.3.18",
         date="2026-03-06",
         changes=[

@@ -96,9 +96,11 @@ anysite db catalog mydb --json             # View saved catalog as JSON
 
 ```bash
 anysite describe                             # List ALL available endpoints
-anysite describe --search "<keyword>"        # Search by keyword (linkedin, company, user, etc.)
-anysite describe /api/linkedin/company       # Inspect specific endpoint: input params + output fields
+anysite describe --search "<keyword>"        # Dependency-aware search: matches + upstream + downstream
+anysite describe /api/linkedin/company       # Inspect endpoint: params, output, and connections
 ```
+
+Search returns matched endpoints plus upstream providers (who can supply the required input IDs) and downstream consumers (who can use the output IDs). This tells you how to chain endpoints into pipelines.
 
 `anysite describe` shows input parameters with types, descriptions, examples, and defaults — plus output fields with nested object/array structure. For example:
 ```

@@ -1,7 +1,7 @@
 """Main CLI application."""
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -236,25 +236,64 @@ def describe(
             typer.echo(json_mod.dumps(build_single_command_detail("describe", click_cmd), indent=2))
             raise typer.Exit(0)
 
-    from anysite.api.schemas import get_schema, list_endpoints, search_endpoints
+    from anysite.api.schemas import get_schema, list_endpoints
     from anysite.cli.json_output import resolve_json_output
 
     json_output = resolve_json_output(json_output)
 
     # Search mode
     if search is not None:
-        results = search_endpoints(search)
-        if not results:
+        from anysite.api.graph import search_graph
+
+        result = search_graph(search)
+        if not result["matches"]:
             typer.echo(f"No endpoints matching '{search}'", err=True)
             typer.echo("Run 'anysite schema update' if cache is empty.", err=True)
             raise typer.Exit(1)
         if json_output:
-            typer.echo(json_mod.dumps(results))
+            from anysite.cli.json_output import json_response
+
+            json_response(
+                result,
+                hints=[
+                    ("View endpoint detail", f"anysite describe {result['matches'][0]['path']}"),
+                    ("Make an API call", f"anysite api {result['matches'][0]['path']}"),
+                ],
+                command=f"anysite describe --search {search!r}",
+            )
         else:
             console = Console()
-            console.print(f"[bold]Endpoints matching '{search}':[/bold]\n")
-            for r in results:
-                console.print(f"  {r['path']:<45} [dim]{r['description']}[/dim]")
+            matches = result["matches"]
+            console.print(f"\n[bold]Endpoints matching '{search}' ({len(matches)} matches):[/bold]\n")
+            for m in matches:
+                cost_str = f"  [dim]\\[{m['cost']}][/dim]" if m.get("cost") else ""
+                console.print(f"  POST {m['path']}{cost_str}")
+                desc = m.get("description", "")
+                if desc:
+                    console.print(f"       [dim]{desc}[/dim]")
+                req_inputs = [i for i in m.get("inputs", []) if i.get("required")]
+                for inp in req_inputs:
+                    id_tag = f" ({inp['id_type']})" if inp.get("id_type") else ""
+                    console.print(f"       needs: {inp['name']}{id_tag}")
+                if m.get("produces"):
+                    console.print(f"       produces: {', '.join(m['produces'])}")
+
+            upstream = result.get("upstream", [])
+            if upstream:
+                console.print(f"\n[bold]UPSTREAM[/bold] — provides data for matched endpoints ({len(upstream)}):")
+                for up in upstream:
+                    console.print(f"  {up['path']}")
+                    for prov in up.get("provides", []):
+                        console.print(f"    [dim]-> provides {prov['id_type']} for {prov['for']}[/dim]")
+
+            downstream = result.get("downstream", [])
+            if downstream:
+                console.print(f"\n[bold]DOWNSTREAM[/bold] — enabled by matched endpoints ({len(downstream)}):")
+                for down in downstream:
+                    console.print(f"  {down['path']}")
+                    for recv in down.get("receives", []):
+                        console.print(f"    [dim]<- receives {recv['id_type']} from {recv['from']}[/dim]")
+            console.print()
         return
 
     # List all endpoints
@@ -290,8 +329,19 @@ def describe(
 
     compact = compact_output(schema.get("output", {}))
 
+    # Load graph connections (silently omit if unavailable)
+    from anysite.api.graph import get_endpoint_connections
+    from anysite.api.schemas import _normalize_command
+
+    endpoint_path = _normalize_command(command)
+    connections = get_endpoint_connections(endpoint_path)
+
     if json_output:
-        typer.echo(json_mod.dumps({"input": schema["input"], "output": compact}))
+        result: dict[str, Any] = {"input": schema["input"], "output": compact}
+        if connections:
+            result["upstream"] = connections["upstream"]
+            result["downstream"] = connections["downstream"]
+        typer.echo(json_mod.dumps(result))
     else:
         console = Console()
         desc = schema.get("description", "")
@@ -326,6 +376,22 @@ def describe(
             for name, ftype in compact.items():
                 ftype_display = rich_escape(ftype)
                 console.print(f"    {name:<30} [dim]{ftype_display}[/dim]")
+
+        if connections:
+            upstream = connections.get("upstream", [])
+            downstream = connections.get("downstream", [])
+            if upstream or downstream:
+                console.print("\n[bold]Connections:[/bold]")
+            if upstream:
+                console.print("  [bold]Upstream[/bold] — provides data for this endpoint:")
+                for up in upstream:
+                    for prov in up.get("provides", []):
+                        console.print(f"    {up['path']}  [dim]provides {prov['id_type']} via {prov['via_field']}[/dim]")
+            if downstream:
+                console.print("  [bold]Downstream[/bold] — enabled by this endpoint:")
+                for down in downstream:
+                    for recv in down.get("receives", []):
+                        console.print(f"    {down['path']}  [dim]receives {recv['id_type']} via {recv['via_field']}[/dim]")
 
 
 # Schema management subcommand
@@ -365,7 +431,12 @@ def schema_update(
       anysite schema update
       anysite schema update --json
     """
-    from anysite.api.schemas import OPENAPI_URL, fetch_and_parse_openapi, save_cache
+    from anysite.api.schemas import (
+        OPENAPI_URL,
+        fetch_raw_openapi_spec,
+        parse_openapi_spec,
+        save_cache,
+    )
     from anysite.cli.json_output import resolve_json_output
 
     json_output = resolve_json_output(json_output)
@@ -375,7 +446,7 @@ def schema_update(
         console.print(f"Fetching OpenAPI spec from {OPENAPI_URL}...")
 
     try:
-        data = fetch_and_parse_openapi()
+        raw_spec = fetch_raw_openapi_spec()
     except Exception as e:
         if json_output:
             from anysite.cli.json_output import json_error
@@ -384,12 +455,22 @@ def schema_update(
         console.print(f"[red]Error fetching spec:[/red] {e}")
         raise typer.Exit(1) from e
 
+    # Build schema cache
+    data = parse_openapi_spec(raw_spec)
     cache_path = save_cache(data)
     count = len(data.get("endpoints", {}))
 
+    # Build and save dependency graph
+    from anysite.api.graph import build_graph, save_graph_cache
+
+    graph = build_graph(raw_spec)
+    graph_path = save_graph_cache(graph)
+    node_count = len(graph.get("nodes", {}))
+    edge_count = len(graph.get("edges", []))
+
     hints = [
         ("List all endpoints", "anysite describe"),
-        ("Search endpoints", 'anysite describe --search "<keyword>"'),
+        ("Search with dependencies", 'anysite describe --search "<keyword>"'),
         ("View endpoint detail", "anysite describe /api/linkedin/user"),
         ("Make an API call", "anysite api /api/linkedin/user user=satyanadella"),
     ]
@@ -398,13 +479,22 @@ def schema_update(
         from anysite.cli.json_output import json_response
 
         json_response(
-            {"endpoints": count, "cache_path": str(cache_path)},
+            {
+                "endpoints": count,
+                "cache_path": str(cache_path),
+                "graph": {
+                    "nodes": node_count,
+                    "edges": edge_count,
+                    "cache_path": str(graph_path),
+                },
+            },
             hints=hints,
             command="anysite schema update",
         )
         return
 
     console.print(f"[green]✓[/green] Cached {count} endpoints to {cache_path}")
+    console.print(f"[green]✓[/green] Built dependency graph: {node_count} nodes, {edge_count} edges")
 
     from anysite.cli.json_output import print_hints
 

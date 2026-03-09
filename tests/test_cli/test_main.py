@@ -1,5 +1,7 @@
 """Tests for main CLI commands."""
 
+from unittest.mock import patch
+
 import pytest
 from typer.testing import CliRunner
 
@@ -71,3 +73,54 @@ def test_api_rejects_bad_params(runner):
     result = runner.invoke(app, ["api", "/api/test", "badparam"])
     assert result.exit_code == 1
     assert "key=value" in result.output
+
+
+def test_describe_search_graph(runner):
+    """Test describe --search uses graph search and displays results."""
+    mock_result = {
+        "query": "linkedin comments",
+        "matches": [
+            {
+                "path": "/api/linkedin/post/comments",
+                "description": "Get comments on a post",
+                "platform": "linkedin",
+                "cost": "5 credits",
+                "inputs": [{"name": "urn", "required": True, "id_type": "li:activity"}],
+                "produces": ["li:fsd_profile"],
+            }
+        ],
+        "upstream": [
+            {
+                "path": "/api/linkedin/user/posts",
+                "description": "Get user posts",
+                "provides": [
+                    {"id_type": "li:activity", "for": "/api/linkedin/post/comments", "via_field": "urn"}
+                ],
+            }
+        ],
+        "downstream": [
+            {
+                "path": "/api/linkedin/user",
+                "description": "Get user profile",
+                "receives": [
+                    {"id_type": "li:fsd_profile", "from": "/api/linkedin/post/comments", "via_field": "urn"}
+                ],
+            }
+        ],
+    }
+    with patch("anysite.api.graph.search_graph", return_value=mock_result):
+        result = runner.invoke(app, ["describe", "--search", "linkedin comments"])
+    assert result.exit_code == 0
+    assert "/api/linkedin/post/comments" in result.stdout
+    assert "UPSTREAM" in result.stdout
+    assert "DOWNSTREAM" in result.stdout
+    assert "/api/linkedin/user/posts" in result.stdout
+
+
+def test_describe_search_no_results(runner):
+    """Test describe --search with no results."""
+    mock_result = {"query": "nonexistent", "matches": [], "upstream": [], "downstream": []}
+    with patch("anysite.api.graph.search_graph", return_value=mock_result):
+        result = runner.invoke(app, ["describe", "--search", "nonexistent"])
+    assert result.exit_code == 1
+    assert "No endpoints" in result.output

@@ -65,10 +65,12 @@ After upgrading, run `anysite changelog --since <old_version> --json` to discove
 
 ```bash
 anysite describe                          # List all endpoints
-anysite describe --search "company"       # Search by keyword
-anysite describe /api/linkedin/company    # Full details: input params + output fields
-anysite describe /api/linkedin/company --json  # Machine-readable with examples + defaults
+anysite describe --search "company"       # Search with dependency context
+anysite describe /api/linkedin/company    # Full details: params, output, connections
+
 ```
+
+Search returns matched endpoints plus upstream providers (who can supply input IDs) and downstream consumers (who can use output IDs). Use this to plan endpoint chains for dataset pipelines.
 
 Input params show type, description, examples, and defaults. Array params show item structure:
 ```

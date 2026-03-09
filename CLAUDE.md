@@ -174,9 +174,10 @@ When releasing a new version:
 - `changelog.py` - Structured changelog for agent discovery. `CHANGELOG` list of `ChangeEntry` objects (newest first). `whats_new_payload()` for discovery integration. `get_changelog_since()` for filtered queries. Used by `anysite changelog` command
 - `api/client.py` - Async HTTP client (`AnysiteClient`) with retry logic, exponential backoff, auth via `access-token` header
 - `api/errors.py` - Exception hierarchy (AuthenticationError, RateLimitError, NotFoundError, ValidationError, ServerError, NetworkError, TimeoutError). Each has `error_code`, `exit_code`, `retryable`, `suggestions`, and `to_dict()` for structured JSON error output
-- `api/schemas.py` - OpenAPI schema cache: fetch spec, resolve `$ref`, extract input/output, search/list endpoints, auto-convert CLI arg types. `_extract_properties()` recursively expands nested objects/arrays with dot-notation keys (e.g., `urn.value`, `experience[].title`) up to `max_depth=3`
+- `api/schemas.py` - OpenAPI schema cache: fetch spec (`fetch_raw_openapi_spec`, `parse_openapi_spec`), resolve `$ref`, extract input/output, list endpoints, auto-convert CLI arg types. `_extract_properties()` recursively expands nested objects/arrays with dot-notation keys (e.g., `urn.value`, `experience[].title`) up to `max_depth=3`
+- `api/graph.py` - Endpoint dependency graph: `build_graph()` from raw OpenAPI spec (nodes=endpoints, edges=data flow via typed ID types like `li:fsd_profile`, `ig:user`). `search_graph()` returns matches + upstream providers + downstream consumers. `get_endpoint_connections()` for single endpoint. Cache at `~/.anysite/graph.json`. Falls back to keyword search over schema.json when graph unavailable
 - `config/settings.py` - Pydantic Settings with priority: CLI > ENV > config file > defaults
-- `config/paths.py` - Config/cache file paths (`~/.anysite/config.yaml`, `~/.anysite/schema.json`)
+- `config/paths.py` - Config/cache file paths (`~/.anysite/config.yaml`, `~/.anysite/schema.json`, `~/.anysite/graph.json`)
 - `output/formatters.py` - JSON, JSONL, CSV, Table formatters with field selection and exclusion
 - `output/templates.py` - Filename templates for batch output (`{id}`, `{username}`, `{date}`, `{index}`)
 - `batch/executor.py` - BatchExecutor: parallel/sequential execution with semaphore, error handling (stop/skip/retry), progress callbacks
@@ -343,7 +344,7 @@ Reusable Typer option type aliases are defined in `cli/options.py`:
 
 Tests are in `tests/` with subdirectories mirroring `src/anysite/`:
 - `test_cli/` — CLI commands, discovery payload, JSON output, exit codes
-- `test_api/` — API client, error codes and structured error output
+- `test_api/` — API client, error codes, structured error output, dependency graph
 - `test_batch/` — Batch executor, rate limiter, input parser
 - `test_streaming/` — Progress and writer
 - `test_output/` — Formatters and templates

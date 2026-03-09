@@ -40,6 +40,15 @@ def get_schema_cache_path() -> Path:
     return get_config_dir() / "schema.json"
 
 
+def get_graph_cache_path() -> Path:
+    """Get the graph cache file path.
+
+    Returns:
+        Path to graph.json in the config directory.
+    """
+    return get_config_dir() / "graph.json"
+
+
 def get_auth_token_path() -> Path:
     """Get the OAuth token file path.
 

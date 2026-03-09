@@ -20,9 +20,11 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
         "parallel execution (--parallel), and streaming output."
     ),
     "describe": (
-        "Explore the API catalog. Search endpoints by keyword (--search), "
-        "or view full input/output schemas for a specific endpoint. "
-        "Uses the local schema cache — run 'anysite schema update' first."
+        "Explore the API catalog with dependency-aware search. "
+        "Search endpoints by keyword (--search) to see matches plus "
+        "upstream providers and downstream consumers. "
+        "View full input/output schemas and connections for a specific endpoint. "
+        "Uses the local schema + graph cache — run 'anysite schema update' first."
     ),
     "schema": (
         "Manage the local API schema cache. "
@@ -282,15 +284,17 @@ COMMAND_EXAMPLES: dict[str, dict[str, Any]] = {
     },
     "describe": {
         "tips": [
-            "Run 'anysite schema update' first to populate the local cache.",
-            "Use 'anysite describe --json' to list all endpoints as JSON.",
+            "Run 'anysite schema update' first to populate the local cache and dependency graph.",
+            "Search returns matched endpoints + upstream providers + downstream consumers.",
+            "Single endpoint describe shows connections (upstream/downstream) when graph is available.",
             "Use 'anysite describe --json -q' for a compact path-only list.",
         ],
         "examples": [
             "anysite describe --json",
             "anysite describe linkedin.user",
             "anysite describe /api/linkedin/user",
-            'anysite describe --search "company"',
+            'anysite describe --search "linkedin comments"',
+            'anysite describe --search "company" --json',
             "anysite describe --json -q",
         ],
     },
@@ -681,6 +685,28 @@ def _collect_status() -> dict[str, Any]:
             }
     except Exception:  # noqa: BLE001
         status["schema"] = {"cached": False}
+
+    # Graph cache
+    try:
+        from anysite.config.paths import get_graph_cache_path
+
+        graph_path = get_graph_cache_path()
+        if graph_path.exists():
+            import json as _json
+
+            gdata = _json.loads(graph_path.read_text())
+            status["graph"] = {
+                "cached": True,
+                "nodes": len(gdata.get("nodes", {})),
+                "edges": len(gdata.get("edges", [])),
+            }
+        else:
+            status["graph"] = {
+                "cached": False,
+                "hint": "Run 'anysite schema update' to enable dependency-aware search.",
+            }
+    except Exception:  # noqa: BLE001
+        status["graph"] = {"cached": False}
 
     return status
 
