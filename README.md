@@ -326,7 +326,7 @@ Input file formats: plain text (one value per line), JSONL, CSV.
 
 ## Dataset Pipelines
 
-Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database. Includes three-level filtering (source, export, DB load), per-source transforms, file/webhook exports, run history, scheduling, and webhook notifications.
+Collect multi-source datasets with dependency chains, store as Parquet, query with DuckDB, and load into a relational database. Includes cross-source SQL JOINs via DuckDB, three-level filtering (source, export, DB load), per-source transforms, file/webhook exports, run history, scheduling, and webhook notifications.
 
 ### Create a dataset
 
@@ -398,6 +398,20 @@ sources:
       key: urn.value                       # Unique key for incremental sync
       sync: append                         # Keep old records (no DELETE on diff)
       fields: [name, url, headline]
+
+  # SQL source — query dataset Parquet files via DuckDB (no external DB needed)
+  - id: enriched_profiles
+    type: sql
+    query: |
+      SELECT u.*, c.description as company_desc
+      FROM profiles u
+      LEFT JOIN companies c ON u._input_value = c._input_value
+
+  # SQL source with named connection (query external database)
+  - id: billing_data
+    type: sql
+    connection: pg                     # Named connection from 'anysite db add'
+    query: "SELECT name, email FROM subscriptions"
 
 storage:
   format: parquet

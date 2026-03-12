@@ -162,7 +162,7 @@ anysite dataset init my-dataset
 3. **Dependent** — batch calls using values extracted from a parent source
 4. **Union (type: union)** — combine records from multiple parent sources into one
 5. **LLM (type: llm)** — process parent data through LLM without API calls
-6. **SQL (type: sql)** — query a database connection, feed results into API enrichment
+6. **SQL (type: sql)** — query a database connection or dataset Parquet files via DuckDB
 
 ### Comprehensive Dataset YAML Reference
 
@@ -260,12 +260,23 @@ sources:
     # NOTE: type: llm cannot have endpoint, from_file, input_key, input
 
   # === TYPE 6: SQL source (query a database) ===
+  # Mode A: Named connection (query external database)
   - id: billing_users
     type: sql
     connection: billing            # Named connection from 'anysite db add'
     query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
     # query_file: queries/inactive.sql   # Alternative: read SQL from file
     filter: ".email != null"       # All base fields work: filter, llm, transform, export, db_load
+
+  # Mode B: Dataset views (no connection — query Parquet via DuckDB)
+  # Each collected source becomes a view by its id (hyphens → underscores)
+  - id: enriched_profiles
+    type: sql
+    query: |
+      SELECT u.*, c.description as company_desc
+      FROM user_profiles u
+      LEFT JOIN company_profiles c ON u._input_value = c._input_value
+    # Use for cross-source JOINs within the pipeline — no external DB needed
     # NOTE: type: sql cannot have endpoint, from_file, input_key, input, parallel, rate_limit, on_error
 
   # === OPTIONAL BLOCKS (any source type) ===
