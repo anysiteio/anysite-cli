@@ -381,13 +381,18 @@ class UnionSource(_SourceBase):
 
 
 class SqlSource(_SourceBase):
-    """SQL query source — runs a query against a named database connection."""
+    """SQL query source — runs a query against a database or dataset views."""
 
     type: Literal["sql"] = Field(
         description="Source type: 'sql' for database query",
     )
-    connection: str = Field(
-        description="Named database connection (from 'anysite db add')",
+    connection: str | None = Field(
+        default=None,
+        description=(
+            "Named database connection (from 'anysite db add'). "
+            "Omit to query dataset Parquet files via DuckDB — "
+            "each collected source becomes a view by its id"
+        ),
     )
     query: str | None = Field(
         default=None,

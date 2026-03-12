@@ -144,6 +144,13 @@ def validate_dataset_config(
                     )
 
         # SQL source checks
+        if isinstance(source, SqlSource) and source.connection is None:
+            if not source.dependency and len(config.sources) > 1:
+                result.warnings.append(
+                    f"sources[{i}]: SQL source '{source.id}' has no connection and no "
+                    f"dependency — dataset views may not be populated on first run. "
+                    f"Consider adding a dependency to ensure correct ordering"
+                )
         if isinstance(source, SqlSource) and source.query_file:
             qf = Path(source.query_file)
             if not qf.is_absolute() and not qf.exists():

@@ -189,14 +189,25 @@ Every dataset config has a top-level `sources:` list. Each source has a unique
            output_column: job_status
 
 6. SQL (type: sql)
-   Runs a SQL query against a named database connection (defined with
-   'anysite db add'). Returns query results as records. Other sources
-   can depend on SQL sources to extract values for batch API calls.
+   Runs a SQL query. Two modes:
+
+   a) Named connection — query a database defined with 'anysite db add':
 
      - id: billing_users
        type: sql
        connection: billing
        query: "SELECT name, email FROM subscriptions WHERE status = 'inactive'"
+
+   b) Dataset views (no connection) — query collected Parquet data via DuckDB.
+      Each source that has been collected becomes a view (by source id).
+      Hyphens and dots in source ids are replaced with underscores.
+
+     - id: combined
+       type: sql
+       query: |
+         SELECT u.*, c.description as company_desc
+         FROM user_profiles u
+         LEFT JOIN company_profiles c ON u._input_value = c._input_value
 
    Use query_file for long queries stored externally:
 
@@ -624,8 +635,9 @@ TYPE: UNION (type: union)
              file_field, parallel, rate_limit, on_error
 
 TYPE: SQL (type: sql)
-  Required:  id, type: sql, connection, query or query_file
-  Optional:  filter, llm, transform, export, db_load, refresh, dependency
+  Required:  id, type: sql, query or query_file
+  Optional:  connection (omit to query dataset Parquet via DuckDB),
+             filter, llm, transform, export, db_load, refresh, dependency
   N/A:       endpoint, params, input_key, input_template, from_file,
              file_field, parallel, rate_limit, on_error, sources, dedupe_by
 

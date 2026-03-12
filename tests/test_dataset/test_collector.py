@@ -1504,3 +1504,124 @@ class TestCollectSql:
         assert plan_steps[0]["kind"] == "sql"
         assert plan_steps[0]["estimated_requests"] == 1
         assert plan_steps[0]["params"]["connection"] == "testdb"
+
+    async def test_sql_source_duckdb_views(self, tmp_path):
+        """SQL source without connection queries dataset Parquet via DuckDB."""
+        data_dir = tmp_path / "data"
+
+        # Write some parquet data as if a prior source collected it
+        source_dir = data_dir / "raw" / "users"
+        source_dir.mkdir(parents=True)
+        write_parquet(
+            [
+                {"name": "Alice", "score": 10},
+                {"name": "Bob", "score": 20},
+            ],
+            source_dir / "2026-03-12.parquet",
+        )
+
+        config = DatasetConfig(
+            name="duckdb-test",
+            sources=[
+                SqlSource(
+                    id="filtered",
+                    type="sql",
+                    query="SELECT name FROM users WHERE score > 15",
+                ),
+            ],
+            storage={"path": str(data_dir)},
+        )
+
+        results = await collect_dataset(config, quiet=True)
+        assert results["filtered"] == 1
+
+        # Verify the result was stored in parquet
+        stored = read_parquet(data_dir / "raw" / "filtered")
+        assert len(stored) == 1
+        assert stored[0]["name"] == "Bob"
+
+    async def test_sql_source_duckdb_join(self, tmp_path):
+        """SQL source without connection can JOIN multiple dataset sources."""
+        data_dir = tmp_path / "data"
+
+        profiles_dir = data_dir / "raw" / "profiles"
+        profiles_dir.mkdir(parents=True)
+        write_parquet(
+            [{"user_id": "u1", "name": "Alice"}, {"user_id": "u2", "name": "Bob"}],
+            profiles_dir / "2026-03-12.parquet",
+        )
+
+        companies_dir = data_dir / "raw" / "companies"
+        companies_dir.mkdir(parents=True)
+        write_parquet(
+            [{"user_id": "u1", "company": "Acme"}, {"user_id": "u2", "company": "Globex"}],
+            companies_dir / "2026-03-12.parquet",
+        )
+
+        config = DatasetConfig(
+            name="join-test",
+            sources=[
+                SqlSource(
+                    id="combined",
+                    type="sql",
+                    query=(
+                        "SELECT p.name, c.company "
+                        "FROM profiles p "
+                        "JOIN companies c ON p.user_id = c.user_id"
+                    ),
+                ),
+            ],
+            storage={"path": str(data_dir)},
+        )
+
+        results = await collect_dataset(config, quiet=True)
+        assert results["combined"] == 2
+
+        stored = read_parquet(data_dir / "raw" / "combined")
+        names = {r["name"] for r in stored}
+        assert names == {"Alice", "Bob"}
+        assert stored[0]["company"] in ("Acme", "Globex")
+
+    async def test_sql_source_duckdb_dry_run(self, tmp_path):
+        """Dry run shows dataset views for connectionless SQL source."""
+        config = DatasetConfig(
+            name="duckdb-plan",
+            sources=[
+                SqlSource(
+                    id="filtered",
+                    type="sql",
+                    query="SELECT * FROM users",
+                ),
+            ],
+            storage={"path": str(tmp_path / "data")},
+        )
+
+        results = await collect_dataset(config, dry_run=True, quiet=True)
+        plan_steps = results["_plan"]
+        assert plan_steps[0]["params"]["connection"] == "(dataset views)"
+
+    async def test_sql_source_duckdb_hyphenated_source_id(self, tmp_path):
+        """Source ids with hyphens are sanitized to underscores for DuckDB views."""
+        data_dir = tmp_path / "data"
+
+        source_dir = data_dir / "raw" / "my-source"
+        source_dir.mkdir(parents=True)
+        write_parquet(
+            [{"name": "Alice"}],
+            source_dir / "2026-03-12.parquet",
+        )
+
+        config = DatasetConfig(
+            name="hyphen-test",
+            sources=[
+                SqlSource(
+                    id="result",
+                    type="sql",
+                    query="SELECT * FROM my_source",
+                ),
+            ],
+            storage={"path": str(data_dir)},
+        )
+
+        results = await collect_dataset(config, quiet=True)
+        assert results["result"] == 1

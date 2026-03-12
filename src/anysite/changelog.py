@@ -49,6 +49,29 @@ class Change:
 
 CHANGELOG: list[ChangeEntry] = [
     ChangeEntry(
+        version="0.3.21",
+        date="2026-03-12",
+        changes=[
+            Change(
+                category="added",
+                summary="SQL sources without connection query dataset Parquet files via DuckDB",
+                detail=(
+                    "When 'connection' is omitted from a type: sql source, the query runs "
+                    "against DuckDB with all previously-collected sources registered as views "
+                    "by their source id. Enables cross-source JOINs within the dataset pipeline."
+                ),
+                example=(
+                    "- id: combined\n"
+                    "  type: sql\n"
+                    "  query: |\n"
+                    "    SELECT u.*, c.description\n"
+                    "    FROM user_profiles u\n"
+                    "    LEFT JOIN company_profiles c ON ..."
+                ),
+            ),
+        ],
+    ),
+    ChangeEntry(
         version="0.3.20",
         date="2026-03-10",
         changes=[

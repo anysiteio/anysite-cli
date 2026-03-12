@@ -261,7 +261,8 @@ async def _collect_source(
         elif isinstance(source, LlmSource):
             print_info(f"Collecting {source.id} (LLM processing)...")
         elif isinstance(source, SqlSource):
-            print_info(f"Collecting {source.id} (SQL query on {source.connection})...")
+            target = source.connection or "dataset views"
+            print_info(f"Collecting {source.id} (SQL query on {target})...")
         else:
             print_info(f"Collecting {source.id} from {source.endpoint}...")
 
@@ -270,7 +271,9 @@ async def _collect_source(
     elif isinstance(source, LlmSource):
         records = await _collect_llm(source, base_path, quiet=quiet)
     elif isinstance(source, SqlSource):
-        records = await _collect_sql(source, config_dir=config_dir, quiet=quiet)
+        records = await _collect_sql(
+            source, config_dir=config_dir, base_path=base_path, config=config, quiet=quiet
+        )
     elif isinstance(source, ApiSource) and source.from_file is not None:
         file_base = config_dir if config_dir else Path.cwd()
         records = await _collect_from_file(
@@ -628,14 +631,16 @@ async def _collect_sql(
     source: SqlSource,
     *,
     config_dir: Path,
+    base_path: Path | None = None,
+    config: DatasetConfig | None = None,
     quiet: bool = False,
 ) -> list[dict[str, Any]]:
-    """Collect records by running a SQL query against a named database connection."""
-    from anysite.db.manager import ConnectionManager
+    """Collect records by running a SQL query.
 
-    manager = ConnectionManager()
-    adapter = manager.get_adapter_by_name(source.connection)
-
+    When ``source.connection`` is set, queries a named database connection.
+    When omitted, queries dataset Parquet files via DuckDB — each collected
+    source is registered as a view by its id.
+    """
     query = source.query
     if source.query_file:
         query_path = Path(source.query_file)
@@ -645,13 +650,74 @@ async def _collect_sql(
             raise DatasetError(f"SQL file not found: {query_path}")
         query = query_path.read_text().strip()
 
-    with adapter:
-        rows = adapter.fetch_all(query)
+    if not query:
+        raise DatasetError(f"SQL source {source.id} has no query")
+
+    if source.connection is not None:
+        # Named database connection
+        from anysite.db.manager import ConnectionManager
+
+        manager = ConnectionManager()
+        adapter = manager.get_adapter_by_name(source.connection)
+        with adapter:
+            rows = adapter.fetch_all(query)
+    else:
+        # DuckDB over dataset Parquet views
+        rows = _run_duckdb_query(
+            query, source_id=source.id, base_path=base_path, config=config
+        )
 
     if not quiet and rows:
         print_info(f"  SQL query returned {len(rows)} rows")
 
     return rows or []
+
+
+def _run_duckdb_query(
+    query: str,
+    *,
+    source_id: str,
+    base_path: Path | None,
+    config: DatasetConfig | None,
+) -> list[dict[str, Any]]:
+    """Execute a SQL query against dataset Parquet files via DuckDB."""
+    try:
+        import duckdb
+    except ImportError:
+        raise DatasetError(
+            "DuckDB is required for connectionless SQL sources. "
+            "Install with: pip install anysite-cli[data]"
+        ) from None
+
+    if base_path is None:
+        raise DatasetError(
+            f"SQL source '{source_id}' without connection requires a dataset context"
+        )
+
+    conn = duckdb.connect(":memory:")
+    try:
+        # Register views for all sources that have Parquet data
+        raw_dir = base_path / "raw"
+        if raw_dir.exists():
+            for source_dir in sorted(raw_dir.iterdir()):
+                if not source_dir.is_dir():
+                    continue
+                parquet_files = list(source_dir.glob("*.parquet"))
+                if not parquet_files:
+                    continue
+                view_name = source_dir.name.replace("-", "_").replace(".", "_")
+                parquet_glob = str(source_dir / "*.parquet")
+                conn.execute(
+                    f"CREATE OR REPLACE VIEW {view_name} AS "
+                    f"SELECT * FROM read_parquet('{parquet_glob}')"
+                )
+
+        result = conn.execute(query)
+        columns = [desc[0] for desc in result.description]
+        rows = [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+        return rows
+    finally:
+        conn.close()
 
 
 async def _collect_dependent(
@@ -890,7 +956,7 @@ def _build_plan(
                 endpoint=None,
                 kind="sql",
                 params={
-                    "connection": source.connection,
+                    "connection": source.connection or "(dataset views)",
                     "query": (source.query or source.query_file or "")[:80],
                 },
                 estimated_requests=1,
