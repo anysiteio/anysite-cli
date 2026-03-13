@@ -49,9 +49,18 @@ class Change:
 
 CHANGELOG: list[ChangeEntry] = [
     ChangeEntry(
-        version="0.3.21",
-        date="2026-03-12",
+        version="0.3.22",
+        date="2026-03-13",
         changes=[
+            Change(
+                category="fixed",
+                summary="Anthropic provider uses tool_use for reliable structured output",
+                detail=(
+                    "Anthropic models now use tool_use API instead of system prompt injection "
+                    "for structured output. Fixes empty results with enrich/classify/summarize. "
+                    "Also adds markdown code fence stripping as fallback for JSON parsing."
+                ),
+            ),
             Change(
                 category="added",
                 summary="SQL sources without connection query dataset Parquet files via DuckDB",

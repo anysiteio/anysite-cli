@@ -132,16 +132,10 @@ class AnthropicProvider(LLMProvider):
             kwargs["system"] = system_text
 
         if structured:
-            # Use prefill approach: ask for JSON in system prompt and parse
-            schema_str = orjson.dumps(structured.schema).decode()
-            suffix = (
-                f"\n\nYou MUST respond with valid JSON matching this schema: {schema_str}"
-                "\nRespond with ONLY the JSON object, no other text."
-            )
-            if system_text:
-                kwargs["system"] = system_text + suffix
-            else:
-                kwargs["system"] = suffix.strip()
+            # Use tool_use for reliable structured output
+            tool_schema = _anthropic_tool_schema(structured)
+            kwargs["tools"] = [tool_schema]
+            kwargs["tool_choice"] = {"type": "tool", "name": structured.name}
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -154,9 +148,13 @@ class AnthropicProvider(LLMProvider):
 
         content = ""
         for block in response.content:
+            if block.type == "tool_use":
+                # Tool use returns parsed dict — serialize to JSON string
+                # for downstream _parse_response() compatibility
+                content = orjson.dumps(block.input).decode()
+                break
             if block.type == "text":
                 content = block.text
-                break
 
         return LLMResponse(
             content=content,
@@ -167,6 +165,21 @@ class AnthropicProvider(LLMProvider):
 
     async def close(self) -> None:
         await self._client.close()
+
+
+def _anthropic_tool_schema(structured: StructuredSchema) -> dict[str, Any]:
+    """Convert a StructuredSchema into an Anthropic tool definition.
+
+    Anthropic tool use requires ``input_schema`` and does not support
+    ``additionalProperties``, so we strip it from the schema.
+    """
+    schema = dict(structured.schema)
+    schema.pop("additionalProperties", None)
+    return {
+        "name": structured.name,
+        "description": "Extract structured data according to the schema.",
+        "input_schema": schema,
+    }
 
 
 def create_provider(

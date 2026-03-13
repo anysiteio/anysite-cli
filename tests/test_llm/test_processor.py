@@ -73,6 +73,24 @@ class TestParseResponse:
         result = _parse_response('[{"x": 1}, {"x": 2}]', batch)
         assert len(result) == 2
 
+    def test_parse_markdown_wrapped_json(self):
+        """JSON wrapped in markdown code fences is parsed correctly."""
+        batch = [{"name": "Alice"}]
+        content = '```json\n{"sentiment": "positive", "score": 8}\n```'
+        result = _parse_response(content, batch)
+        assert len(result) == 1
+        assert result[0]["name"] == "Alice"
+        assert result[0]["sentiment"] == "positive"
+        assert result[0]["score"] == 8
+
+    def test_parse_markdown_wrapped_json_no_lang(self):
+        """Markdown fences without language tag are also handled."""
+        batch = [{"name": "Bob"}]
+        content = '```\n{"category": "tech"}\n```'
+        result = _parse_response(content, batch)
+        assert len(result) == 1
+        assert result[0]["category"] == "tech"
+
 
 class TestLLMProcessor:
     @pytest.mark.asyncio

@@ -199,10 +199,24 @@ class LLMProcessor:
             }
 
 
+def _strip_markdown_json(text: str) -> str:
+    """Strip markdown code fences from LLM responses."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Remove opening fence (```json or ```)
+        first_newline = stripped.find("\n")
+        if first_newline != -1:
+            stripped = stripped[first_newline + 1 :]
+        # Remove closing fence
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3].rstrip()
+    return stripped
+
+
 def _parse_response(content: str, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Parse LLM response into structured results.
 
-    Tries JSON parsing first, falls back to raw text.
+    Tries JSON parsing first, strips markdown fences if needed, falls back to raw text.
     """
     try:
         parsed = orjson.loads(content)
@@ -230,7 +244,28 @@ def _parse_response(content: str, batch: list[dict[str, Any]]) -> list[dict[str,
         if isinstance(parsed, list):
             return parsed
     except (orjson.JSONDecodeError, ValueError):
-        pass
+        # Try stripping markdown code fences (common with Anthropic)
+        cleaned = _strip_markdown_json(content)
+        if cleaned != content:
+            try:
+                parsed = orjson.loads(cleaned)
+                if isinstance(parsed, dict):
+                    if len(batch) == 1:
+                        return [{**batch[0], **parsed}]
+                    if "results" in parsed and isinstance(parsed["results"], list):
+                        results = []
+                        for item in parsed["results"]:
+                            idx = item.get("index", len(results))
+                            if idx < len(batch):
+                                results.append({**batch[idx], **item})
+                            else:
+                                results.append(item)
+                        return results
+                    return [parsed]
+                if isinstance(parsed, list):
+                    return parsed
+            except (orjson.JSONDecodeError, ValueError):
+                pass
 
     # Fallback: return raw text as result
     if len(batch) == 1:
