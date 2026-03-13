@@ -32,6 +32,15 @@ class LLMProvider(ABC):
         ...
 
 
+def _openai_uses_completion_tokens(model: str) -> bool:
+    """Check if the model uses max_completion_tokens (GPT-4.1+, GPT-5+, o-series)."""
+    m = model.lower()
+    for prefix in ("gpt-4.1", "gpt-4.5", "gpt-5", "o1", "o3", "o4"):
+        if m.startswith(prefix):
+            return True
+    return False
+
+
 class OpenAIProvider(LLMProvider):
     """OpenAI provider using the official openai SDK."""
 
@@ -51,11 +60,18 @@ class OpenAIProvider(LLMProvider):
     ) -> LLMResponse:
         import openai
 
+        # GPT-4.1+ and GPT-5+ use max_completion_tokens instead of max_tokens
+        token_key = (
+            "max_completion_tokens"
+            if _openai_uses_completion_tokens(self.model)
+            else "max_tokens"
+        )
+
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            token_key: max_tokens,
         }
 
         if structured:

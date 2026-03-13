@@ -49,9 +49,13 @@ class Change:
 
 CHANGELOG: list[ChangeEntry] = [
     ChangeEntry(
-        version="0.3.22",
+        version="0.3.23",
         date="2026-03-13",
         changes=[
+            Change(
+                category="fixed",
+                summary="OpenAI provider uses max_completion_tokens for GPT-4.1+/GPT-5+/o-series models",
+            ),
             Change(
                 category="fixed",
                 summary="Anthropic provider uses tool_use for reliable structured output",
